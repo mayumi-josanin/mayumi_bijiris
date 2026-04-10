@@ -112,13 +112,39 @@ function seedDb() {
   };
 }
 
+function surveyComparable(survey) {
+  const { createdAt, updatedAt, ...rest } = survey;
+  return rest;
+}
+
+function hasCurrentDefaultSurveys(db) {
+  const defaults = makeDefaultSurveys("default");
+  return (
+    Array.isArray(db.surveys) &&
+    JSON.stringify(db.surveys.map(surveyComparable)) ===
+      JSON.stringify(defaults.map(surveyComparable))
+  );
+}
+
+async function syncDefaultSurveys() {
+  const raw = await fs.readFile(DB_FILE, "utf8");
+  const db = JSON.parse(raw);
+  if (hasCurrentDefaultSurveys(db)) return;
+
+  db.surveys = makeDefaultSurveys(now());
+  db.responses = Array.isArray(db.responses) ? db.responses : [];
+  await fs.writeFile(DB_FILE, `${JSON.stringify(db, null, 2)}\n`);
+}
+
 async function ensureDb() {
   await fs.mkdir(DATA_DIR, { recursive: true });
   try {
     await fs.access(DB_FILE);
   } catch {
     await fs.writeFile(DB_FILE, `${JSON.stringify(seedDb(), null, 2)}\n`);
+    return;
   }
+  await syncDefaultSurveys();
 }
 
 async function readDb() {
