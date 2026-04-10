@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
+const os = require("node:os");
 const path = require("node:path");
 const { URL } = require("node:url");
 
@@ -8,6 +9,7 @@ const ROOT_DIR = __dirname;
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT_DIR, "data");
 const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, "db.json");
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 const SESSION_SECRET =
@@ -39,6 +41,13 @@ function id(prefix) {
 
 function now() {
   return new Date().toISOString();
+}
+
+function getLanUrls() {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((network) => network && network.family === "IPv4" && !network.internal)
+    .map((network) => `http://${network.address}:${PORT}`);
 }
 
 function base64Url(input) {
@@ -485,8 +494,22 @@ const server = http.createServer(async (req, res) => {
 
 ensureDb()
   .then(() => {
-    server.listen(PORT, () => {
-      console.log(`Mayumi Bijiris app running at http://localhost:${PORT}`);
+    server.listen(PORT, HOST, () => {
+      const localUrl = `http://localhost:${PORT}`;
+      const lanUrls = getLanUrls();
+      console.log("Mayumi Bijiris app is running.");
+      console.log(`Admin URL: ${localUrl}/?app=admin`);
+      console.log(`Customer URL: ${localUrl}/?app=customer`);
+      if (lanUrls.length) {
+        console.log("Same Wi-Fi customer URLs:");
+        lanUrls.forEach((url) => {
+          console.log(`- ${url}/?app=customer`);
+        });
+        console.log("Same Wi-Fi admin URLs:");
+        lanUrls.forEach((url) => {
+          console.log(`- ${url}/?app=admin`);
+        });
+      }
     });
   })
   .catch((error) => {

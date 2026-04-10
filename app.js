@@ -10,9 +10,12 @@ const modeTitle = document.querySelector("#mode-title");
 const modeKicker = document.querySelector("#mode-kicker");
 const topbarActions = document.querySelector("#topbar-actions");
 const navButtons = document.querySelectorAll("[data-mode]");
+const searchParams = new URLSearchParams(window.location.search);
+const requestedApp = searchParams.get("app");
 
 const state = {
-  mode: "customer",
+  mode: requestedApp === "admin" ? "admin" : "customer",
+  customerOnly: requestedApp === "customer",
   adminTab: "dashboard",
   selectedSurveyId: null,
   editingSurveyId: null,
@@ -24,6 +27,8 @@ const state = {
   adminToken: localStorage.getItem(STORAGE_KEYS.adminToken) || "",
   installPrompt: null,
 };
+
+document.body.dataset.appMode = state.customerOnly ? "customer-only" : "full";
 
 function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -154,15 +159,20 @@ function isAdminLoggedIn() {
   return Boolean(state.adminToken);
 }
 
-async function setMode(nextMode) {
-  state.mode = nextMode;
+function syncModeNav() {
   navButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === state.mode);
   });
+}
+
+async function setMode(nextMode) {
+  state.mode = nextMode;
+  syncModeNav();
   await render();
 }
 
 async function render() {
+  syncModeNav();
   renderTopbarActions();
   if (state.mode === "customer") {
     modeTitle.textContent = "アンケート回答アプリ";

@@ -158,6 +158,11 @@ h3 {
   margin-top: auto;
 }
 
+body[data-app-mode="customer-only"] [data-mode="admin"],
+body[data-app-mode="customer-only"] .admin-note {
+  display: none;
+}
+
 .main-panel {
   min-width: 0;
   padding: 28px;
