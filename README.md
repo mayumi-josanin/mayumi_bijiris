@@ -1,6 +1,6 @@
 # Mayumi Bijiris Survey App
 
-まゆみ助産院内で使うアンケート Web アプリです。MacBook を院内サーバーとして起動し、お客様はスマホからお客様アプリに回答します。管理者は別の管理アプリで回答を確認・管理します。
+まゆみ助産院で使うアンケート Web アプリです。お客様はスマホからお客様アプリに回答し、管理者は別の管理アプリで回答を確認・管理します。
 
 ## ファイル
 
@@ -15,6 +15,18 @@
 
 ## 使い方
 
+公開運用では、Node.js API を Render などの公開サーバーで起動します。GitHub Pages 上のお客様アプリと管理アプリは、公開 API `https://mayumi-bijiris.onrender.com` へ自動接続します。
+
+- お客様アプリ: `https://mayumi-josanin.github.io/mayumi_bijiris/customer-app/`
+- 管理アプリ: `https://mayumi-josanin.github.io/mayumi_bijiris/admin-app/`
+
+API サーバー側の同一URLでも使えます。
+
+- お客様アプリ: `https://mayumi-bijiris.onrender.com/customer-app/`
+- 管理アプリ: `https://mayumi-bijiris.onrender.com/admin-app/`
+
+ローカルで確認する場合:
+
 1. Node.js 18 以上を用意します。
 2. 必要に応じて `.env.example` を参考に環境変数を設定します。
 3. サーバーを起動します。
@@ -27,12 +39,25 @@ npm start
 5. お客様は `customer-app` でお客様情報を保存してからアンケートに回答します。
 6. 管理者は `admin-app` でログインして回答を確認・管理します。
 
-開発用の初期管理者ログイン:
+ローカル開発用の初期管理者ログイン:
 
 - ID: `admin`
 - PASS: `admin123`
 
 公開運用では `ADMIN_USERNAME` と `ADMIN_PASSWORD` を必ず変更してください。
+
+## 公開サーバー設定
+
+Render にこのリポジトリを接続すると、`render.yaml` の設定で Node.js API とアプリ配信を起動できます。Render 側で次の環境変数を設定してください。
+
+- `ADMIN_USERNAME`: 管理アプリのログインID
+- `ADMIN_PASSWORD`: 管理アプリのパスワード
+- `SESSION_SECRET`: 管理ログイン用の秘密キー
+- `DATA_DIR=/var/data`
+
+回答データは Render の永続ディスク `survey-data` に保存します。
+
+Render のサービスURLを変更した場合は、アプリURLの末尾に `?apiBase=https://変更後のURL` を付けて一度開くと、その端末に接続先が保存されます。
 
 ## 院内 Wi-Fi で使う
 
