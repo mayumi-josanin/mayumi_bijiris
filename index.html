@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mayumi Bijiris Survey</title>
+    <link rel="preconnect" href="https://images.unsplash.com" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side-panel">
+        <div class="brand">
+          <div class="brand-mark">MB</div>
+          <div>
+            <p class="brand-kicker">Mayumi Bijiris</p>
+            <h1>アンケート管理</h1>
+          </div>
+        </div>
+        <img
+          class="side-image"
+          src="https://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=900&q=80"
+          alt="ミーティング中のテーブル"
+        />
+        <nav class="mode-nav" aria-label="アプリ切り替え">
+          <button class="nav-button active" type="button" data-mode="customer">
+            回答アプリ
+          </button>
+          <button class="nav-button" type="button" data-mode="admin">
+            管理アプリ
+          </button>
+        </nav>
+        <div class="side-note">
+          <strong>管理者ログイン</strong>
+          <span>ID: admin / PASS: admin123</span>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <section class="topbar">
+          <div>
+            <p class="section-kicker" id="mode-kicker">Customer App</p>
+            <h2 id="mode-title">アンケート回答アプリ</h2>
+          </div>
+          <div class="topbar-actions" id="topbar-actions"></div>
+        </section>
+
+        <section id="app" class="workspace" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <template id="question-editor-template">
+      <div class="question-editor">
+        <div class="form-grid">
+          <label>
+            質問文
+            <input type="text" data-question-field="label" placeholder="例: サービスの満足度を教えてください" />
+          </label>
+          <label>
+            回答形式
+            <select data-question-field="type">
+              <option value="text">短文</option>
+              <option value="textarea">長文</option>
+              <option value="rating">5段階評価</option>
+              <option value="choice">選択式</option>
+            </select>
+          </label>
+        </div>
+        <label class="options-field">
+          選択肢（選択式のみ、カンマ区切り）
+          <input type="text" data-question-field="options" placeholder="良い,普通,改善してほしい" />
+        </label>
+        <button type="button" class="text-button danger" data-remove-question>質問を削除</button>
+      </div>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
