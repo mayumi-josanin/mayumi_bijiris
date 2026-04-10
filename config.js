@@ -1,0 +1,1 @@
+window.MAYUMI_BIJIRIS_API_BASE = "";

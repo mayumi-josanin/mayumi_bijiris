@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mayumi Bijiris Survey</title>
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="アンケート" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <link rel="preconnect" href="https://images.unsplash.com" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -32,7 +39,11 @@
         </nav>
         <div class="side-note">
           <strong>管理者ログイン</strong>
-          <span>ID: admin / PASS: admin123</span>
+          <span>ログイン情報は API サーバーの環境変数で管理します。</span>
+        </div>
+        <div class="side-note">
+          <strong>スマホ追加</strong>
+          <span>共有メニューから「ホーム画面に追加」を選べます。</span>
         </div>
       </aside>
 
@@ -74,6 +85,7 @@
       </div>
     </template>
 
+    <script src="./config.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

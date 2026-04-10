@@ -1,12 +1,9 @@
 const STORAGE_KEYS = {
-  surveys: "mayumi_bijiris_surveys",
-  responses: "mayumi_bijiris_responses",
   customer: "mayumi_bijiris_customer",
-  admin: "mayumi_bijiris_admin",
+  adminToken: "mayumi_bijiris_admin_token",
 };
 
-const ADMIN_ID = "admin";
-const ADMIN_PASSWORD = "admin123";
+const API_BASE = String(window.MAYUMI_BIJIRIS_API_BASE || "").replace(/\/$/, "");
 
 const app = document.querySelector("#app");
 const modeTitle = document.querySelector("#mode-title");
@@ -14,16 +11,25 @@ const modeKicker = document.querySelector("#mode-kicker");
 const topbarActions = document.querySelector("#topbar-actions");
 const navButtons = document.querySelectorAll("[data-mode]");
 
-let mode = "customer";
-let adminTab = "dashboard";
-let selectedSurveyId = null;
-let editingSurveyId = null;
+const state = {
+  mode: "customer",
+  adminTab: "dashboard",
+  selectedSurveyId: null,
+  editingSurveyId: null,
+  publicSurveys: [],
+  customerHistory: [],
+  adminSurveys: [],
+  adminResponses: [],
+  customer: loadLocal(STORAGE_KEYS.customer, { name: "", email: "" }),
+  adminToken: localStorage.getItem(STORAGE_KEYS.adminToken) || "",
+  installPrompt: null,
+};
 
 function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function load(key, fallback) {
+function loadLocal(key, fallback) {
   try {
     const value = localStorage.getItem(key);
     return value ? JSON.parse(value) : fallback;
@@ -32,7 +38,7 @@ function load(key, fallback) {
   }
 }
 
-function save(key, value) {
+function saveLocal(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
@@ -61,131 +67,183 @@ function showToast(message) {
   toast.className = "toast";
   toast.textContent = message;
   document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 2600);
+  setTimeout(() => toast.remove(), 2800);
 }
 
-function seedData() {
-  const currentSurveys = load(STORAGE_KEYS.surveys, null);
-  if (currentSurveys) return;
-
-  const firstSurveyId = uid("survey");
-  const secondSurveyId = uid("survey");
-  const surveys = [
-    {
-      id: firstSurveyId,
-      title: "ご利用満足度アンケート",
-      description: "サービスをより良くするため、率直なご意見をお聞かせください。",
-      status: "published",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      questions: [
-        {
-          id: uid("question"),
-          label: "今回のサービス全体の満足度を教えてください。",
-          type: "rating",
-          options: [],
-        },
-        {
-          id: uid("question"),
-          label: "スタッフの対応はいかがでしたか。",
-          type: "choice",
-          options: ["とても良い", "良い", "普通", "改善してほしい"],
-        },
-        {
-          id: uid("question"),
-          label: "印象に残った点や改善してほしい点を教えてください。",
-          type: "textarea",
-          options: [],
-        },
-      ],
-    },
-    {
-      id: secondSurveyId,
-      title: "新サービス希望アンケート",
-      description: "今後受けたいサービスや相談したい内容をお選びください。",
-      status: "published",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      questions: [
-        {
-          id: uid("question"),
-          label: "興味のある内容を選んでください。",
-          type: "choice",
-          options: ["個別相談", "資料作成", "業務効率化", "その他"],
-        },
-        {
-          id: uid("question"),
-          label: "具体的に相談したい内容があれば入力してください。",
-          type: "textarea",
-          options: [],
-        },
-      ],
-    },
-  ];
-
-  save(STORAGE_KEYS.surveys, surveys);
-  save(STORAGE_KEYS.responses, []);
-  selectedSurveyId = firstSurveyId;
+function showLoading(message = "読み込み中です。") {
+  app.innerHTML = `
+    <section class="panel">
+      <p class="empty">${escapeHtml(message)}</p>
+    </section>
+  `;
 }
 
-function getSurveys() {
-  return load(STORAGE_KEYS.surveys, []);
+function showApiError(error) {
+  app.innerHTML = `
+    <section class="panel">
+      <h3>接続できませんでした</h3>
+      <p class="helper">${escapeHtml(error.message || "API サーバーに接続できませんでした。")}</p>
+      <div class="button-row">
+        <button class="primary-button" type="button" data-retry>再読み込み</button>
+      </div>
+    </section>
+  `;
+  document.querySelector("[data-retry]")?.addEventListener("click", () => {
+    void render();
+  });
 }
 
-function setSurveys(surveys) {
-  save(STORAGE_KEYS.surveys, surveys);
+async function apiRequest(path, options = {}) {
+  const headers = {
+    Accept: "application/json",
+    ...(options.headers || {}),
+  };
+
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  if (options.auth && state.adminToken) {
+    headers.Authorization = `Bearer ${state.adminToken}`;
+  }
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: options.method || "GET",
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json")
+    ? await response.json()
+    : {};
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      state.adminToken = "";
+      localStorage.removeItem(STORAGE_KEYS.adminToken);
+    }
+    throw new Error(data.error || `API error: ${response.status}`);
+  }
+
+  return data;
 }
 
-function getResponses() {
-  return load(STORAGE_KEYS.responses, []);
+async function loadCustomerData() {
+  const surveys = await apiRequest("/api/public/surveys");
+  state.publicSurveys = surveys.surveys || [];
+
+  if (state.customer.email) {
+    const query = encodeURIComponent(state.customer.email);
+    const history = await apiRequest(`/api/public/responses?email=${query}`);
+    state.customerHistory = history.responses || [];
+  } else {
+    state.customerHistory = [];
+  }
 }
 
-function setResponses(responses) {
-  save(STORAGE_KEYS.responses, responses);
-}
-
-function getCustomer() {
-  return load(STORAGE_KEYS.customer, { name: "", email: "" });
-}
-
-function setCustomer(customer) {
-  save(STORAGE_KEYS.customer, customer);
+async function loadAdminData() {
+  const [surveyResult, responseResult] = await Promise.all([
+    apiRequest("/api/admin/surveys", { auth: true }),
+    apiRequest("/api/admin/responses", { auth: true }),
+  ]);
+  state.adminSurveys = surveyResult.surveys || [];
+  state.adminResponses = responseResult.responses || [];
 }
 
 function isAdminLoggedIn() {
-  return load(STORAGE_KEYS.admin, false) === true;
+  return Boolean(state.adminToken);
 }
 
-function setMode(nextMode) {
-  mode = nextMode;
+async function setMode(nextMode) {
+  state.mode = nextMode;
   navButtons.forEach((button) => {
-    button.classList.toggle("active", button.dataset.mode === mode);
+    button.classList.toggle("active", button.dataset.mode === state.mode);
   });
-  render();
+  await render();
 }
 
-function render() {
-  topbarActions.innerHTML = "";
-  if (mode === "customer") {
+async function render() {
+  renderTopbarActions();
+  if (state.mode === "customer") {
     modeTitle.textContent = "アンケート回答アプリ";
     modeKicker.textContent = "Customer App";
-    renderCustomerApp();
+    showLoading();
+    try {
+      await loadCustomerData();
+      renderCustomerApp();
+    } catch (error) {
+      showApiError(error);
+    }
   } else {
     modeTitle.textContent = "アンケート管理アプリ";
     modeKicker.textContent = "Admin App";
-    renderAdminApp();
+    try {
+      await renderAdminApp();
+    } catch (error) {
+      showApiError(error);
+    }
   }
+  renderTopbarActions();
+}
+
+function renderTopbarActions() {
+  const installButton = state.installPrompt
+    ? `<button class="secondary-button" type="button" data-install-app>アプリを追加</button>`
+    : "";
+  const adminButtons =
+    state.mode === "admin" && isAdminLoggedIn()
+      ? `
+        <button class="secondary-button" type="button" data-export-json>回答データを書き出し</button>
+        <button class="secondary-button" type="button" data-admin-logout>ログアウト</button>
+      `
+      : "";
+
+  topbarActions.innerHTML = `${installButton}${adminButtons}`;
+
+  document.querySelector("[data-install-app]")?.addEventListener("click", async () => {
+    if (!state.installPrompt) return;
+    state.installPrompt.prompt();
+    await state.installPrompt.userChoice;
+    state.installPrompt = null;
+    renderTopbarActions();
+  });
+
+  document.querySelector("[data-admin-logout]")?.addEventListener("click", () => {
+    state.adminToken = "";
+    localStorage.removeItem(STORAGE_KEYS.adminToken);
+    void render();
+  });
+
+  document.querySelector("[data-export-json]")?.addEventListener("click", () => {
+    const data = {
+      surveys: state.adminSurveys,
+      responses: state.adminResponses,
+      exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `mayumi-bijiris-survey-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  });
 }
 
 function renderCustomerApp() {
-  const surveys = getSurveys().filter((survey) => survey.status === "published");
-  const customer = getCustomer();
-  if (!selectedSurveyId || !surveys.some((survey) => survey.id === selectedSurveyId)) {
-    selectedSurveyId = surveys[0]?.id ?? null;
+  const surveys = state.publicSurveys;
+  const customer = state.customer;
+  if (
+    !state.selectedSurveyId ||
+    !surveys.some((survey) => survey.id === state.selectedSurveyId)
+  ) {
+    state.selectedSurveyId = surveys[0]?.id ?? null;
   }
-  const selectedSurvey = surveys.find((survey) => survey.id === selectedSurveyId);
-  const history = getResponses()
-    .filter((response) => response.customerEmail === customer.email && customer.email)
+  const selectedSurvey = surveys.find((survey) => survey.id === state.selectedSurveyId);
+  const history = state.customerHistory
+    .slice()
     .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
   app.innerHTML = `
@@ -231,7 +289,7 @@ function renderCustomerApp() {
                     `,
                   )
                   .join("")
-              : `<p class="empty">お客様情報を保存すると、このブラウザで送信した回答履歴を確認できます。</p>`
+              : `<p class="empty">お客様情報を保存すると、同じメールアドレスの回答履歴を確認できます。</p>`
           }
         </div>
       </section>
@@ -246,7 +304,7 @@ function renderCustomerApp() {
               ? surveys
                   .map(
                     (survey) => `
-                      <button class="list-item ${survey.id === selectedSurveyId ? "selected" : ""}" type="button" data-select-survey="${survey.id}">
+                      <button class="list-item ${survey.id === state.selectedSurveyId ? "selected" : ""}" type="button" data-select-survey="${survey.id}">
                         <span class="list-item-header">
                           <strong>${escapeHtml(survey.title)}</strong>
                           <span class="badge">公開中</span>
@@ -353,19 +411,19 @@ function bindCustomerEvents() {
   document.querySelector("#customer-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
-    const customer = {
+    state.customer = {
       name: String(formData.get("name") || "").trim(),
       email: String(formData.get("email") || "").trim().toLowerCase(),
     };
-    setCustomer(customer);
+    saveLocal(STORAGE_KEYS.customer, state.customer);
     showToast("お客様情報を保存しました。");
-    render();
+    void render();
   });
 
   document.querySelectorAll("[data-select-survey]").forEach((button) => {
     button.addEventListener("click", () => {
-      selectedSurveyId = button.dataset.selectSurvey;
-      render();
+      state.selectedSurveyId = button.dataset.selectSurvey;
+      renderCustomerApp();
     });
   });
 
@@ -373,45 +431,51 @@ function bindCustomerEvents() {
     document.querySelector("#answer-form")?.reset();
   });
 
-  document.querySelector("#answer-form")?.addEventListener("submit", (event) => {
+  document.querySelector("#answer-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const customer = getCustomer();
-    if (!customer.name || !customer.email) {
+    if (!state.customer.name || !state.customer.email) {
       showToast("先にお客様情報を保存してください。");
       return;
     }
 
-    const survey = getSurveys().find((item) => item.id === selectedSurveyId);
+    const survey = state.publicSurveys.find(
+      (item) => item.id === state.selectedSurveyId,
+    );
     if (!survey) return;
 
-    const formData = new FormData(event.currentTarget);
-    const answers = survey.questions.map((question) => ({
-      questionId: question.id,
-      label: question.label,
-      type: question.type,
-      value: String(formData.get(`question-${question.id}`) || ""),
-    }));
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.textContent = "送信中";
 
-    const responses = getResponses();
-    responses.push({
-      id: uid("response"),
-      surveyId: survey.id,
-      surveyTitle: survey.title,
-      customerName: customer.name,
-      customerEmail: customer.email,
-      answers,
-      submittedAt: new Date().toISOString(),
-    });
-    setResponses(responses);
-    event.currentTarget.reset();
-    showToast("回答を送信しました。");
-    render();
+    try {
+      const formData = new FormData(event.currentTarget);
+      const answers = survey.questions.map((question) => ({
+        questionId: question.id,
+        value: String(formData.get(`question-${question.id}`) || ""),
+      }));
+
+      await apiRequest("/api/public/responses", {
+        method: "POST",
+        body: {
+          surveyId: survey.id,
+          customer: state.customer,
+          answers,
+        },
+      });
+      event.currentTarget.reset();
+      showToast("回答を送信しました。");
+      await render();
+    } catch (error) {
+      showToast(error.message || "回答を送信できませんでした。");
+      submitButton.disabled = false;
+      submitButton.textContent = "回答を送信";
+    }
   });
 }
 
-function renderAdminApp() {
+async function renderAdminApp() {
   if (!isAdminLoggedIn()) {
-    topbarActions.innerHTML = "";
+    renderTopbarActions();
     app.innerHTML = `
       <section class="panel">
         <h3>管理者ログイン</h3>
@@ -430,79 +494,71 @@ function renderAdminApp() {
         </form>
       </section>
     `;
-    document.querySelector("#admin-login-form")?.addEventListener("submit", (event) => {
+    document.querySelector("#admin-login-form")?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const formData = new FormData(event.currentTarget);
-      const loginId = String(formData.get("loginId") || "");
-      const password = String(formData.get("password") || "");
-      if (loginId === ADMIN_ID && password === ADMIN_PASSWORD) {
-        save(STORAGE_KEYS.admin, true);
+      const form = event.currentTarget;
+      const formData = new FormData(form);
+      const submitButton = form.querySelector('button[type="submit"]');
+      submitButton.disabled = true;
+      submitButton.textContent = "確認中";
+
+      try {
+        const result = await apiRequest("/api/admin/login", {
+          method: "POST",
+          body: {
+            loginId: String(formData.get("loginId") || ""),
+            password: String(formData.get("password") || ""),
+          },
+        });
+        state.adminToken = result.token;
+        localStorage.setItem(STORAGE_KEYS.adminToken, result.token);
         showToast("ログインしました。");
-        render();
-      } else {
-        showToast("ログインIDまたはパスワードが違います。");
+        await render();
+      } catch (error) {
+        showToast(error.message || "ログインできませんでした。");
+        submitButton.disabled = false;
+        submitButton.textContent = "ログイン";
       }
     });
     return;
   }
 
-  topbarActions.innerHTML = `
-    <button class="secondary-button" type="button" data-export-json>回答データを書き出し</button>
-    <button class="secondary-button" type="button" data-admin-logout>ログアウト</button>
-  `;
+  showLoading("管理データを読み込み中です。");
+  await loadAdminData();
 
   app.innerHTML = `
     <section class="panel">
       <div class="admin-tabs">
-        <button class="tab-button ${adminTab === "dashboard" ? "active" : ""}" type="button" data-admin-tab="dashboard">集計</button>
-        <button class="tab-button ${adminTab === "responses" ? "active" : ""}" type="button" data-admin-tab="responses">回答管理</button>
-        <button class="tab-button ${adminTab === "surveys" ? "active" : ""}" type="button" data-admin-tab="surveys">アンケート管理</button>
+        <button class="tab-button ${state.adminTab === "dashboard" ? "active" : ""}" type="button" data-admin-tab="dashboard">集計</button>
+        <button class="tab-button ${state.adminTab === "responses" ? "active" : ""}" type="button" data-admin-tab="responses">回答管理</button>
+        <button class="tab-button ${state.adminTab === "surveys" ? "active" : ""}" type="button" data-admin-tab="surveys">アンケート管理</button>
       </div>
       <div id="admin-content"></div>
     </section>
   `;
 
-  if (adminTab === "responses") renderResponseManagement();
-  if (adminTab === "surveys") renderSurveyManagement();
-  if (adminTab === "dashboard") renderDashboard();
+  if (state.adminTab === "responses") renderResponseManagement();
+  if (state.adminTab === "surveys") renderSurveyManagement();
+  if (state.adminTab === "dashboard") renderDashboard();
   bindAdminShellEvents();
 }
 
 function bindAdminShellEvents() {
   document.querySelectorAll("[data-admin-tab]").forEach((button) => {
     button.addEventListener("click", () => {
-      adminTab = button.dataset.adminTab;
-      render();
+      state.adminTab = button.dataset.adminTab;
+      if (state.adminTab === "responses") renderResponseManagement();
+      if (state.adminTab === "surveys") renderSurveyManagement();
+      if (state.adminTab === "dashboard") renderDashboard();
+      renderTopbarActions();
     });
-  });
-
-  document.querySelector("[data-admin-logout]")?.addEventListener("click", () => {
-    save(STORAGE_KEYS.admin, false);
-    render();
-  });
-
-  document.querySelector("[data-export-json]")?.addEventListener("click", () => {
-    const data = {
-      surveys: getSurveys(),
-      responses: getResponses(),
-      exportedAt: new Date().toISOString(),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `mayumi-bijiris-survey-${Date.now()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
   });
 }
 
 function renderDashboard() {
   const content = document.querySelector("#admin-content");
-  const surveys = getSurveys();
-  const responses = getResponses();
+  const surveys = state.adminSurveys;
+  const responses = state.adminResponses;
   const customerMap = groupResponsesByCustomer(responses);
   const latest = responses
     .slice()
@@ -614,10 +670,10 @@ function renderCustomerTable(customers) {
 
 function renderResponseManagement() {
   const content = document.querySelector("#admin-content");
-  const surveys = getSurveys();
-  const responses = getResponses().sort(
-    (a, b) => new Date(b.submittedAt) - new Date(a.submittedAt),
-  );
+  const surveys = state.adminSurveys;
+  const responses = state.adminResponses
+    .slice()
+    .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
   content.innerHTML = `
     <div class="form-grid">
@@ -696,9 +752,9 @@ function renderResponseTable(responses) {
 
 function renderSurveyManagement() {
   const content = document.querySelector("#admin-content");
-  const surveys = getSurveys();
+  const surveys = state.adminSurveys;
   const currentSurvey =
-    surveys.find((survey) => survey.id === editingSurveyId) ||
+    surveys.find((survey) => survey.id === state.editingSurveyId) ||
     createBlankSurvey();
 
   content.innerHTML = `
@@ -713,7 +769,7 @@ function renderSurveyManagement() {
               ? surveys
                   .map(
                     (survey) => `
-                      <article class="list-item ${survey.id === editingSurveyId ? "selected" : ""}">
+                      <article class="list-item ${survey.id === state.editingSurveyId ? "selected" : ""}">
                         <div class="list-item-header">
                           <strong>${escapeHtml(survey.title)}</strong>
                           <span class="badge ${survey.status === "draft" ? "draft" : ""}">${survey.status === "published" ? "公開中" : "下書き"}</span>
@@ -833,25 +889,34 @@ function collectQuestionsFromEditor() {
 
 function bindSurveyManagementEvents() {
   document.querySelector("[data-new-survey]")?.addEventListener("click", () => {
-    editingSurveyId = null;
-    render();
+    state.editingSurveyId = null;
+    renderSurveyManagement();
+    bindAdminShellEvents();
   });
 
   document.querySelectorAll("[data-edit-survey]").forEach((button) => {
     button.addEventListener("click", () => {
-      editingSurveyId = button.dataset.editSurvey;
-      render();
+      state.editingSurveyId = button.dataset.editSurvey;
+      renderSurveyManagement();
+      bindAdminShellEvents();
     });
   });
 
   document.querySelectorAll("[data-delete-survey]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const surveyId = button.dataset.deleteSurvey;
       if (!confirm("このアンケートを削除しますか？関連する回答データは残ります。")) return;
-      setSurveys(getSurveys().filter((survey) => survey.id !== surveyId));
-      if (editingSurveyId === surveyId) editingSurveyId = null;
-      showToast("アンケートを削除しました。");
-      render();
+      try {
+        await apiRequest(`/api/admin/surveys/${encodeURIComponent(surveyId)}`, {
+          method: "DELETE",
+          auth: true,
+        });
+        if (state.editingSurveyId === surveyId) state.editingSurveyId = null;
+        showToast("アンケートを削除しました。");
+        await render();
+      } catch (error) {
+        showToast(error.message || "アンケートを削除できませんでした。");
+      }
     });
   });
 
@@ -868,6 +933,11 @@ function bindSurveyManagementEvents() {
       .querySelector('[data-question-field="type"]')
       .addEventListener("change", () => toggleQuestionOptions(node));
     node.querySelector("[data-remove-question]").addEventListener("click", () => {
+      const editors = document.querySelectorAll(".question-editor");
+      if (editors.length <= 1) {
+        showToast("質問は1つ以上必要です。");
+        return;
+      }
       node.remove();
     });
     document.querySelector("#question-editor-list").appendChild(node);
@@ -884,7 +954,7 @@ function bindSurveyManagementEvents() {
     });
   });
 
-  document.querySelector("#survey-editor")?.addEventListener("submit", (event) => {
+  document.querySelector("#survey-editor")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
     const formData = new FormData(form);
@@ -899,33 +969,68 @@ function bindSurveyManagementEvents() {
       return;
     }
 
-    const surveys = getSurveys();
-    const surveyId = form.dataset.surveyId || uid("survey");
-    const existing = surveys.find((survey) => survey.id === surveyId);
+    const surveyId = form.dataset.surveyId;
     const survey = {
-      id: surveyId,
       title: String(formData.get("title") || "").trim(),
       description: String(formData.get("description") || "").trim(),
       status: String(formData.get("status") || "draft"),
       questions,
-      createdAt: existing?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     };
 
-    const nextSurveys = existing
-      ? surveys.map((item) => (item.id === surveyId ? survey : item))
-      : [survey, ...surveys];
-    setSurveys(nextSurveys);
-    editingSurveyId = surveyId;
-    selectedSurveyId = survey.status === "published" ? surveyId : selectedSurveyId;
-    showToast("アンケートを保存しました。");
-    render();
+    const submitButton = form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.textContent = "保存中";
+
+    try {
+      const result = await apiRequest(
+        surveyId
+          ? `/api/admin/surveys/${encodeURIComponent(surveyId)}`
+          : "/api/admin/surveys",
+        {
+          method: surveyId ? "PUT" : "POST",
+          auth: true,
+          body: survey,
+        },
+      );
+      state.editingSurveyId = result.survey.id;
+      state.selectedSurveyId =
+        result.survey.status === "published"
+          ? result.survey.id
+          : state.selectedSurveyId;
+      showToast("アンケートを保存しました。");
+      await render();
+    } catch (error) {
+      showToast(error.message || "アンケートを保存できませんでした。");
+      submitButton.disabled = false;
+      submitButton.textContent = "保存";
+    }
+  });
+}
+
+function registerPwa() {
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    });
+  }
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    state.installPrompt = event;
+    renderTopbarActions();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    state.installPrompt = null;
+    renderTopbarActions();
   });
 }
 
 navButtons.forEach((button) => {
-  button.addEventListener("click", () => setMode(button.dataset.mode));
+  button.addEventListener("click", () => {
+    void setMode(button.dataset.mode);
+  });
 });
 
-seedData();
-render();
+registerPwa();
+void render();

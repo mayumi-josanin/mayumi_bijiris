@@ -145,7 +145,6 @@ h3 {
 }
 
 .side-note {
-  margin-top: auto;
   display: grid;
   gap: 6px;
   padding: 14px;
@@ -153,6 +152,10 @@ h3 {
   border-radius: 8px;
   color: #d8e4df;
   font-size: 0.93rem;
+}
+
+.mode-nav + .side-note {
+  margin-top: auto;
 }
 
 .main-panel {
