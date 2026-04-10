@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>まゆみ助産院 アンケート管理</title>
+    <meta name="theme-color" content="#5a7a4e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="まゆみ管理" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="icon" href="./icons/icon-192.png" sizes="192x192" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <section id="loginView" class="login-view">
+      <form id="loginForm" class="login-card">
+        <img src="./icons/icon-192.png" alt="まゆみ助産院" />
+        <h1>管理者認証</h1>
+        <p>アンケート回答を確認・管理します。</p>
+        <label>
+          ログインID
+          <input name="loginId" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          パスワード
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button class="primary-button" type="submit">ログイン</button>
+      </form>
+    </section>
+
+    <section id="adminView" class="admin-view" hidden>
+      <header>
+        <h1>まゆみ助産院 アンケート管理</h1>
+        <div class="header-actions">
+          <button id="installButton" class="header-button" type="button" hidden>追加</button>
+          <button id="refreshButton" class="header-button" type="button">更新</button>
+          <button id="logoutButton" class="header-button" type="button">ログアウト</button>
+        </div>
+      </header>
+
+      <div class="app-container">
+        <aside class="sidebar">
+          <button class="nav-item active" type="button" data-page="dashboard">📊 集計</button>
+          <button class="nav-item" type="button" data-page="responses">📝 回答管理</button>
+          <button class="nav-item" type="button" data-page="customers">👥 お客様別</button>
+          <button class="nav-item" type="button" data-page="install">📲 追加案内</button>
+        </aside>
+
+        <main class="main-content">
+          <section id="page-dashboard" class="page active">
+            <h2>集計</h2>
+            <div id="statsGrid" class="stats-grid"></div>
+            <div class="grid-two">
+              <section class="card">
+                <div class="card-title">最新の回答</div>
+                <div id="latestResponses" class="stack"></div>
+              </section>
+              <section class="card">
+                <div class="card-title">アンケート別回答数</div>
+                <div id="surveySummary" class="stack"></div>
+              </section>
+            </div>
+          </section>
+
+          <section id="page-responses" class="page">
+            <h2>回答管理</h2>
+            <div class="card">
+              <div class="filter-grid">
+                <label>
+                  アンケート
+                  <select id="surveyFilter"></select>
+                </label>
+                <label>
+                  対応状況
+                  <select id="statusFilter">
+                    <option value="">すべて</option>
+                    <option value="new">未対応</option>
+                    <option value="checked">確認済み</option>
+                    <option value="done">対応済み</option>
+                  </select>
+                </label>
+                <label>
+                  お客様名・メール
+                  <input id="keywordFilter" type="search" placeholder="検索" />
+                </label>
+                <button id="exportCsvButton" class="secondary-button" type="button">CSV出力</button>
+              </div>
+            </div>
+            <div id="responseList" class="response-list"></div>
+          </section>
+
+          <section id="page-customers" class="page">
+            <h2>お客様別</h2>
+            <div id="customerList" class="customer-list"></div>
+          </section>
+
+          <section id="page-install" class="page">
+            <h2>管理アプリをホーム画面に追加</h2>
+            <div class="card">
+              <p>この管理画面もホーム画面へ追加できます。管理者の MacBook やスマホだけで使ってください。</p>
+              <div class="url-box" id="adminUrlBox"></div>
+              <ol>
+                <li>Safari または Chrome で管理アプリを開きます。</li>
+                <li>共有メニュー、またはブラウザメニューからホーム画面に追加します。</li>
+                <li>追加後はアイコンから管理画面を直接開けます。</li>
+              </ol>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <nav class="bottom-nav" aria-label="管理アプリメニュー">
+        <button class="bottom-nav-item active" type="button" data-page="dashboard">📊<span>集計</span></button>
+        <button class="bottom-nav-item" type="button" data-page="responses">📝<span>回答</span></button>
+        <button class="bottom-nav-item" type="button" data-page="customers">👥<span>お客様</span></button>
+        <button class="bottom-nav-item" type="button" data-page="install">📲<span>追加</span></button>
+      </nav>
+    </section>
+
+    <script src="../shared/api.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

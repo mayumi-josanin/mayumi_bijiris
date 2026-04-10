@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>まゆみ助産院 アンケート</title>
+    <meta name="theme-color" content="#8a9e7e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="まゆみアンケート" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="icon" href="./icons/icon-192.png" sizes="192x192" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <header class="app-header">
+      <div class="brand">
+        <img src="./icons/icon-192.png" alt="まゆみ助産院" />
+        <div>
+          <div class="brand-name">まゆみ助産院</div>
+          <div class="brand-sub">アンケート回答アプリ</div>
+        </div>
+      </div>
+      <button id="installButton" class="header-button" type="button" hidden>追加</button>
+    </header>
+
+    <main>
+      <section id="page-answer" class="page active">
+        <section class="welcome-card">
+          <p class="eyebrow">Survey</p>
+          <h1>ご意見をお聞かせください</h1>
+          <p>回答はまゆみ助産院の管理アプリへ送信されます。</p>
+        </section>
+
+        <section class="section-card">
+          <h2>お客様情報</h2>
+          <form id="customerForm" class="form-grid">
+            <label>
+              お名前
+              <input name="name" type="text" autocomplete="name" required />
+            </label>
+            <label>
+              メールアドレス
+              <input name="email" type="email" autocomplete="email" required />
+            </label>
+            <button class="primary-button" type="submit">保存する</button>
+          </form>
+        </section>
+
+        <section class="section-card">
+          <div class="section-head">
+            <div>
+              <h2>アンケート</h2>
+              <p>回答するアンケートを選んでください。</p>
+            </div>
+            <button id="refreshButton" class="ghost-button" type="button">更新</button>
+          </div>
+          <div id="surveyList" class="survey-list"></div>
+        </section>
+
+        <section id="answerPanel" class="section-card"></section>
+      </section>
+
+      <section id="page-history" class="page">
+        <section class="section-card">
+          <div class="section-head">
+            <div>
+              <h1>回答履歴</h1>
+              <p>保存したメールアドレスの回答履歴を表示します。</p>
+            </div>
+            <button id="historyRefreshButton" class="ghost-button" type="button">更新</button>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+      </section>
+
+      <section id="page-guide" class="page">
+        <section class="section-card">
+          <h1>ホーム画面に追加</h1>
+          <p>この画面を追加すると、次回からアプリのように開けます。</p>
+          <div class="guide-list">
+            <article>
+              <strong>iPhone</strong>
+              <span>Safari の共有ボタンから「ホーム画面に追加」を選んでください。</span>
+            </article>
+            <article>
+              <strong>Android</strong>
+              <span>Chrome のメニュー、または表示される案内から「アプリをインストール」を選んでください。</span>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="お客様アプリメニュー">
+      <button class="nav-button active" type="button" data-page="answer">
+        <span>✍</span>
+        回答
+      </button>
+      <button class="nav-button" type="button" data-page="history">
+        <span>🕒</span>
+        履歴
+      </button>
+      <button class="nav-button" type="button" data-page="guide">
+        <span>📲</span>
+        追加
+      </button>
+    </nav>
+
+    <script src="../shared/api.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

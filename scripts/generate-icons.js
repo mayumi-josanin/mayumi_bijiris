@@ -2,7 +2,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
 
-const OUT_DIR = path.join(__dirname, "..", "icons");
+const OUT_DIRS = [
+  path.join(__dirname, "..", "icons"),
+  path.join(__dirname, "..", "customer-app", "icons"),
+  path.join(__dirname, "..", "admin-app", "icons"),
+];
 
 function makeCrcTable() {
   const table = new Uint32Array(256);
@@ -47,7 +51,7 @@ function insideRoundedRect(x, y, size, inset, radius) {
   return dx * dx + dy * dy <= radius * radius;
 }
 
-function writeIcon(size) {
+function makeIcon(size) {
   const rowLength = size * 4 + 1;
   const raw = Buffer.alloc(rowLength * size);
   const inset = Math.round(size * 0.13);
@@ -139,9 +143,11 @@ function writeIcon(size) {
     chunk("IDAT", zlib.deflateSync(raw)),
     chunk("IEND", Buffer.alloc(0)),
   ]);
-  fs.writeFileSync(path.join(OUT_DIR, `icon-${size}.png`), png);
+  return png;
 }
 
-fs.mkdirSync(OUT_DIR, { recursive: true });
-writeIcon(192);
-writeIcon(512);
+for (const outDir of OUT_DIRS) {
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, "icon-192.png"), makeIcon(192));
+  fs.writeFileSync(path.join(outDir, "icon-512.png"), makeIcon(512));
+}

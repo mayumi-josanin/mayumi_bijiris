@@ -3,89 +3,135 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mayumi Bijiris Survey</title>
-    <meta name="theme-color" content="#0f766e" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="アンケート" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="icon" href="./icons/icon-192.png" sizes="192x192" />
-    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
-    <link rel="preconnect" href="https://images.unsplash.com" />
-    <link rel="stylesheet" href="./styles.css" />
+    <title>まゆみ助産院 アンケート</title>
+    <meta name="theme-color" content="#8a9e7e" />
+    <style>
+      :root {
+        --cream: #fdf8f0;
+        --warm-white: #fefcf8;
+        --sage: #8a9e7e;
+        --sage-dark: #5a7a4e;
+        --blush: #e8c9b5;
+        --text-dark: #3d2e1e;
+        --text-mid: #6b5040;
+        --border: rgba(122, 92, 62, 0.15);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--cream);
+        color: var(--text-dark);
+        font-family: "Noto Serif JP", serif, system-ui, sans-serif;
+        letter-spacing: 0;
+      }
+
+      main {
+        width: min(920px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 40px 0;
+      }
+
+      .hero {
+        padding: 30px 24px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--warm-white);
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 18px;
+      }
+
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 54px;
+        height: 54px;
+        border-radius: 8px;
+        background: var(--sage);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 25px;
+        color: var(--sage-dark);
+      }
+
+      p {
+        color: var(--text-mid);
+        line-height: 1.8;
+      }
+
+      .links {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 22px;
+      }
+
+      a {
+        display: block;
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--text-dark);
+        text-decoration: none;
+      }
+
+      a strong {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--sage-dark);
+        font-size: 17px;
+      }
+
+      code {
+        word-break: break-all;
+      }
+
+      @media (max-width: 720px) {
+        .links {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="side-panel">
+    <main>
+      <section class="hero">
         <div class="brand">
-          <div class="brand-mark">MB</div>
+          <div class="mark">ま</div>
           <div>
-            <p class="brand-kicker">Mayumi Bijiris</p>
-            <h1>アンケート管理</h1>
+            <h1>まゆみ助産院 アンケート</h1>
+            <p>お客様用アプリと管理者用アプリを分けています。</p>
           </div>
         </div>
-        <img
-          class="side-image"
-          src="https://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=900&q=80"
-          alt="ミーティング中のテーブル"
-        />
-        <nav class="mode-nav" aria-label="アプリ切り替え">
-          <button class="nav-button active" type="button" data-mode="customer">
-            回答アプリ
-          </button>
-          <button class="nav-button" type="button" data-mode="admin">
-            管理アプリ
-          </button>
-        </nav>
-        <div class="side-note admin-note">
-          <strong>管理者ログイン</strong>
-          <span>ログイン情報は API サーバーの環境変数で管理します。</span>
+        <p>
+          お客様には <code>/customer-app/</code> の URL を共有してください。管理者は
+          <code>/admin-app/</code> から回答を確認・管理します。
+        </p>
+        <div class="links">
+          <a href="./customer-app/">
+            <strong>お客様アプリ</strong>
+            アンケート回答と回答履歴の確認
+          </a>
+          <a href="./admin-app/">
+            <strong>管理アプリ</strong>
+            回答一覧、集計、対応状況、管理メモ
+          </a>
         </div>
-        <div class="side-note mobile-note">
-          <strong>スマホ追加</strong>
-          <span>共有メニューから「ホーム画面に追加」を選べます。</span>
-        </div>
-      </aside>
-
-      <main class="main-panel">
-        <section class="topbar">
-          <div>
-            <p class="section-kicker" id="mode-kicker">Customer App</p>
-            <h2 id="mode-title">アンケート回答アプリ</h2>
-          </div>
-          <div class="topbar-actions" id="topbar-actions"></div>
-        </section>
-
-        <section id="app" class="workspace" aria-live="polite"></section>
-      </main>
-    </div>
-
-    <template id="question-editor-template">
-      <div class="question-editor">
-        <div class="form-grid">
-          <label>
-            質問文
-            <input type="text" data-question-field="label" placeholder="例: サービスの満足度を教えてください" />
-          </label>
-          <label>
-            回答形式
-            <select data-question-field="type">
-              <option value="text">短文</option>
-              <option value="textarea">長文</option>
-              <option value="rating">5段階評価</option>
-              <option value="choice">選択式</option>
-            </select>
-          </label>
-        </div>
-        <label class="options-field">
-          選択肢（選択式のみ、カンマ区切り）
-          <input type="text" data-question-field="options" placeholder="良い,普通,改善してほしい" />
-        </label>
-        <button type="button" class="text-button danger" data-remove-question>質問を削除</button>
-      </div>
-    </template>
-
-    <script src="./config.js"></script>
-    <script src="./app.js"></script>
+      </section>
+    </main>
   </body>
 </html>

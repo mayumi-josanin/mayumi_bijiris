@@ -6,6 +6,10 @@ const path = require("node:path");
 const { URL } = require("node:url");
 
 const ROOT_DIR = __dirname;
+const STATIC_APPS = {
+  "/customer": path.join(ROOT_DIR, "customer-app"),
+  "/admin": path.join(ROOT_DIR, "admin-app"),
+};
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT_DIR, "data");
 const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, "db.json");
 const PORT = Number(process.env.PORT || 3000);
@@ -209,6 +213,10 @@ function normalizeEmail(value) {
   return normalizeText(value).toLowerCase();
 }
 
+function normalizeResponseStatus(status) {
+  return ["new", "checked", "done"].includes(status) ? status : "new";
+}
+
 function validateSurveyPayload(payload, existing) {
   const title = normalizeText(payload.title);
   const description = normalizeText(payload.description);
@@ -296,6 +304,8 @@ function validateResponsePayload(db, payload) {
     customerName,
     customerEmail,
     answers,
+    status: "new",
+    adminMemo: "",
     submittedAt: now(),
   };
 }
@@ -412,7 +422,46 @@ async function handleApi(req, res, pathname, searchParams) {
 
     if (req.method === "GET" && pathname === "/api/admin/responses") {
       const db = await readDb();
-      sendJson(res, 200, { responses: db.responses });
+      sendJson(res, 200, {
+        responses: db.responses.map((response) => ({
+          status: "new",
+          adminMemo: "",
+          ...response,
+        })),
+      });
+      return;
+    }
+
+    if (req.method === "PUT" && pathname.startsWith("/api/admin/responses/")) {
+      const responseId = getRouteId(pathname, "/api/admin/responses/");
+      const payload = await readBody(req);
+      const result = await updateDb((db) => {
+        const existing = db.responses.find((response) => response.id === responseId);
+        if (!existing) throw new Error("回答が見つかりません。");
+        const updated = {
+          ...existing,
+          status: normalizeResponseStatus(payload.status),
+          adminMemo: normalizeText(payload.adminMemo),
+          managedAt: now(),
+        };
+        db.responses = db.responses.map((response) =>
+          response.id === responseId ? updated : response,
+        );
+        return { response: updated };
+      });
+      sendJson(res, 200, result);
+      return;
+    }
+
+    if (req.method === "DELETE" && pathname.startsWith("/api/admin/responses/")) {
+      const responseId = getRouteId(pathname, "/api/admin/responses/");
+      const result = await updateDb((db) => {
+        const before = db.responses.length;
+        db.responses = db.responses.filter((response) => response.id !== responseId);
+        if (db.responses.length === before) throw new Error("回答が見つかりません。");
+        return { ok: true };
+      });
+      sendJson(res, 200, result);
       return;
     }
 
@@ -449,9 +498,34 @@ function contentTypeFor(filePath) {
 }
 
 async function serveStatic(req, res, pathname) {
+  if (pathname === "/customer") {
+    res.writeHead(302, { Location: "/customer/" });
+    res.end();
+    return;
+  }
+
+  if (pathname === "/admin") {
+    res.writeHead(302, { Location: "/admin/" });
+    res.end();
+    return;
+  }
+
+  const appEntry = Object.entries(STATIC_APPS).find(([prefix]) =>
+    pathname === `${prefix}/` || pathname.startsWith(`${prefix}/`),
+  );
+
+  if (appEntry) {
+    const [prefix, appDir] = appEntry;
+    const relativePath = pathname.slice(prefix.length) || "/";
+    await serveStaticFromDir(res, appDir, relativePath);
+    return;
+  }
+
   const requestedPath = pathname === "/" ? "/index.html" : pathname;
   const decodedPath = decodeURIComponent(requestedPath);
-  if (decodedPath.startsWith("/data/") || decodedPath.includes("..")) {
+  if (
+    decodedPath.startsWith("/data/") || decodedPath.includes("..")
+  ) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
@@ -483,6 +557,41 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
+async function serveStaticFromDir(res, baseDir, requestedPath) {
+  const relative = requestedPath === "/" ? "/index.html" : requestedPath;
+  const decodedPath = decodeURIComponent(relative);
+  if (decodedPath.includes("..")) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+
+  const filePath = path.join(baseDir, decodedPath);
+  if (!filePath.startsWith(baseDir)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+
+  try {
+    const file = await fs.readFile(filePath);
+    res.writeHead(200, {
+      "Content-Type": contentTypeFor(filePath),
+      "Cache-Control": filePath.endsWith("index.html")
+        ? "no-cache"
+        : "public, max-age=3600",
+    });
+    res.end(file);
+  } catch {
+    const index = await fs.readFile(path.join(baseDir, "index.html"));
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-cache",
+    });
+    res.end(index);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname.startsWith("/api/")) {
@@ -498,16 +607,16 @@ ensureDb()
       const localUrl = `http://localhost:${PORT}`;
       const lanUrls = getLanUrls();
       console.log("Mayumi Bijiris app is running.");
-      console.log(`Admin URL: ${localUrl}/?app=admin`);
-      console.log(`Customer URL: ${localUrl}/?app=customer`);
+      console.log(`Customer app: ${localUrl}/customer-app/`);
+      console.log(`Admin app: ${localUrl}/admin-app/`);
       if (lanUrls.length) {
-        console.log("Same Wi-Fi customer URLs:");
+        console.log("Same Wi-Fi customer app URLs:");
         lanUrls.forEach((url) => {
-          console.log(`- ${url}/?app=customer`);
+          console.log(`- ${url}/customer-app/`);
         });
-        console.log("Same Wi-Fi admin URLs:");
+        console.log("Same Wi-Fi admin app URLs:");
         lanUrls.forEach((url) => {
-          console.log(`- ${url}/?app=admin`);
+          console.log(`- ${url}/admin-app/`);
         });
       }
     });
