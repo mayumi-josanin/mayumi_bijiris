@@ -69,7 +69,7 @@
           <div class="section-head">
             <div>
               <h1>回答履歴</h1>
-              <p>保存したメールアドレスの回答履歴を表示します。</p>
+              <p>この端末から送信した回答履歴を表示します。</p>
             </div>
             <button id="historyRefreshButton" class="ghost-button" type="button">更新</button>
           </div>
@@ -110,6 +110,11 @@
       </button>
     </nav>
 
+    <script src="../default-surveys.js"></script>
+    <script src="../shared/firebase-config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
     <script src="../shared/api.js"></script>
     <script src="./app.js"></script>
   </body>

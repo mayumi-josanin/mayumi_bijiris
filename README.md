@@ -15,12 +15,12 @@
 
 ## 使い方
 
-公開運用では、Node.js API を Render などの公開サーバーで起動します。GitHub Pages 上のお客様アプリと管理アプリは、公開 API `https://mayumi-bijiris.onrender.com` へ自動接続します。
+無料運用では Firebase Spark プランの Firestore に回答を保存します。GitHub Pages 上のお客様アプリと管理アプリは、`shared/firebase-config.js` に Firebase 設定が入っている場合、Firestore へ直接接続します。
 
 - お客様アプリ: `https://mayumi-josanin.github.io/mayumi_bijiris/customer-app/`
 - 管理アプリ: `https://mayumi-josanin.github.io/mayumi_bijiris/admin-app/`
 
-API サーバー側の同一URLでも使えます。
+Render などで Node.js API を起動する場合は、API サーバー側の同一URLでも使えます。
 
 - お客様アプリ: `https://mayumi-bijiris.onrender.com/customer-app/`
 - 管理アプリ: `https://mayumi-bijiris.onrender.com/admin-app/`
@@ -45,6 +45,22 @@ npm start
 - PASS: `admin123`
 
 公開運用では `ADMIN_USERNAME` と `ADMIN_PASSWORD` を必ず変更してください。
+
+## 無料の保存先設定
+
+Firebase Spark プランを使う場合は、Firebase コンソールで次を設定します。
+
+1. Firebase プロジェクトを作成します。
+2. Authentication で「匿名」と「メール/パスワード」を有効にします。
+3. 管理者用のメールアドレスとパスワードを Authentication に登録します。
+4. Firestore Database を作成します。
+5. Firestore Rules に `firebase/firestore.rules` の内容を貼り付けて公開します。
+6. Web アプリを追加し、表示された Firebase config を `shared/firebase-config.js` に貼り付けます。
+7. `./deploy.sh "Update Firebase config"` で GitHub Pages に反映します。
+
+Firebase 設定後は、GitHub Pages のお客様アプリから回答保存でき、管理アプリで集計・確認できます。
+
+Firebase 設定が空の間もお客様アプリには3つのアンケートが表示されますが、回答保存と管理アプリの集計には Firebase 設定が必要です。
 
 ## 公開サーバー設定
 

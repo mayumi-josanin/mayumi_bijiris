@@ -1,4 +1,4 @@
-const CACHE_NAME = "mayumi-admin-survey-v2";
+const CACHE_NAME = "mayumi-admin-survey-v3";
 const APP_ASSETS = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const APP_ASSETS = [
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
+  "../default-surveys.js",
   "../shared/api.js",
 ];
 
@@ -29,6 +30,7 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.pathname.includes("/api/")) return;
+  if (url.pathname.endsWith("/shared/firebase-config.js")) return;
 
   if (event.request.mode === "navigate") {
     event.respondWith(fetch(event.request).catch(() => caches.match("./index.html")));

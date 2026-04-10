@@ -272,4 +272,10 @@ function makeDefaultSurveys(timestamp = new Date().toISOString()) {
   ];
 }
 
-module.exports = { makeDefaultSurveys };
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { makeDefaultSurveys };
+}
+
+if (typeof window !== "undefined") {
+  window.MayumiDefaultSurveys = makeDefaultSurveys;
+}

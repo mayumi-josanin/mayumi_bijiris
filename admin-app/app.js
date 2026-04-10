@@ -406,6 +406,7 @@ loginForm.addEventListener("submit", async (event) => {
 document.querySelector("#logoutButton").addEventListener("click", () => {
   state.token = "";
   localStorage.removeItem(TOKEN_KEY);
+  void api.logout?.();
   setLoggedIn(false);
 });
 
