@@ -1,4 +1,7 @@
 const CUSTOMER_KEY = "mayumi_survey_customer";
+const PHOTO_FILE_LIMIT = 6;
+const PHOTO_MAX_SIZE = 1400;
+const PHOTO_JPEG_QUALITY = 0.74;
 
 const appState = {
   customer: loadLocal(CUSTOMER_KEY, { name: "", email: "" }),
@@ -46,6 +49,49 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")));
+    reader.addEventListener("error", () => reject(new Error("写真を読み込めませんでした。")));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener("load", () => resolve(image));
+    image.addEventListener("error", () =>
+      reject(new Error("JPEG、PNG、WEBPの写真を選択してください。")),
+    );
+    image.src = src;
+  });
+}
+
+async function preparePhotoFile(file) {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("写真ファイルを選択してください。");
+  }
+
+  const source = await readFileAsDataUrl(file);
+  const image = await loadImage(source);
+  const scale = Math.min(1, PHOTO_MAX_SIZE / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0, width, height);
+
+  return {
+    name: file.name || "photo.jpg",
+    type: "image/jpeg",
+    dataUrl: canvas.toDataURL("image/jpeg", PHOTO_JPEG_QUALITY),
+  };
 }
 
 function showToast(message) {
@@ -155,13 +201,18 @@ function renderAnswerPanel() {
 
 function renderQuestion(question, index) {
   const name = `question-${question.id}`;
-  const label = `${index + 1}. ${escapeHtml(question.label)}`;
+  const required = question.required !== false;
+  const requiredAttr = required ? "required" : "";
+  const label = `
+    <span>${index + 1}. ${escapeHtml(question.label)}</span>
+    ${required ? "" : `<span class="meta">任意</span>`}
+  `;
 
   if (question.type === "textarea") {
     return `
       <label class="question-block">
         ${label}
-        <textarea name="${name}" required></textarea>
+        <textarea name="${name}" ${requiredAttr}></textarea>
       </label>
     `;
   }
@@ -172,7 +223,7 @@ function renderQuestion(question, index) {
         <legend>${label}</legend>
         <div class="rating-row">
           ${[1, 2, 3, 4, 5]
-            .map((value) => `<label><input type="radio" name="${name}" value="${value}" required />${value}</label>`)
+            .map((value) => `<label><input type="radio" name="${name}" value="${value}" ${requiredAttr} />${value}</label>`)
             .join("")}
         </div>
       </fieldset>
@@ -185,19 +236,80 @@ function renderQuestion(question, index) {
         <legend>${label}</legend>
         <div class="choice-row">
           ${question.options
-            .map((option) => `<label><input type="radio" name="${name}" value="${escapeHtml(option)}" required />${escapeHtml(option)}</label>`)
+            .map((option) => `<label><input type="radio" name="${name}" value="${escapeHtml(option)}" ${requiredAttr} />${escapeHtml(option)}</label>`)
             .join("")}
         </div>
       </fieldset>
     `;
   }
 
+  if (question.type === "checkbox") {
+    return `
+      <fieldset class="question-block">
+        <legend>${label}</legend>
+        <div class="checkbox-row">
+          ${question.options
+            .map((option) => `<label><input type="checkbox" name="${name}" value="${escapeHtml(option)}" />${escapeHtml(option)}</label>`)
+            .join("")}
+        </div>
+      </fieldset>
+    `;
+  }
+
+  if (question.type === "photo") {
+    return `
+      <label class="question-block">
+        ${label}
+        <input type="file" name="${name}" accept="image/*" multiple ${requiredAttr} />
+        <span class="field-help">スマホ内の写真を選択してください。複数枚まとめて添付できます。</span>
+      </label>
+    `;
+  }
+
   return `
     <label class="question-block">
       ${label}
-      <input type="text" name="${name}" required />
+      <input type="text" name="${name}" ${requiredAttr} />
     </label>
   `;
+}
+
+async function collectAnswers(form, survey) {
+  const formData = new FormData(form);
+  const answers = [];
+
+  for (const question of survey.questions) {
+    const name = `question-${question.id}`;
+    if (question.type === "checkbox") {
+      const values = formData.getAll(name).map((value) => String(value || ""));
+      if (question.required !== false && !values.length) {
+        throw new Error("未回答の質問があります。");
+      }
+      answers.push({ questionId: question.id, value: values });
+      continue;
+    }
+
+    if (question.type === "photo") {
+      const input = form.elements.namedItem(name);
+      const selectedFiles = input?.files ? Array.from(input.files).slice(0, PHOTO_FILE_LIMIT) : [];
+      if (question.required !== false && !selectedFiles.length) {
+        throw new Error("未回答の質問があります。");
+      }
+      const files = [];
+      for (const file of selectedFiles) {
+        files.push(await preparePhotoFile(file));
+      }
+      answers.push({ questionId: question.id, files });
+      continue;
+    }
+
+    answers.push({
+      questionId: question.id,
+      value: String(formData.get(name) || ""),
+    });
+  }
+
+  return answers;
 }
 
 async function submitAnswer(event) {
@@ -212,15 +324,11 @@ async function submitAnswer(event) {
 
   const submitButton = event.currentTarget.querySelector('button[type="submit"]');
   submitButton.disabled = true;
-  submitButton.textContent = "送信中です";
-
-  const formData = new FormData(event.currentTarget);
-  const answers = survey.questions.map((question) => ({
-    questionId: question.id,
-    value: String(formData.get(`question-${question.id}`) || ""),
-  }));
+  submitButton.textContent = "送信準備中です";
 
   try {
+    const answers = await collectAnswers(event.currentTarget, survey);
+    submitButton.textContent = "送信中です";
     await api.request("/api/public/responses", {
       method: "POST",
       body: {
@@ -240,6 +348,26 @@ async function submitAnswer(event) {
   }
 }
 
+function renderAnswerValue(answer) {
+  if (Array.isArray(answer.files) && answer.files.length) {
+    return `
+      <div class="photo-list">
+        ${answer.files
+          .map(
+            (file) => `
+              <a class="photo-thumb" href="${escapeHtml(file.dataUrl)}" download="${escapeHtml(file.name)}">
+                <img src="${escapeHtml(file.dataUrl)}" alt="${escapeHtml(file.name)}" />
+                <span>${escapeHtml(file.name)}</span>
+              </a>
+            `,
+          )
+          .join("")}
+      </div>
+    `;
+  }
+  return escapeHtml(answer.value || "未回答");
+}
+
 function renderHistory() {
   if (!appState.history.length) {
     historyList.innerHTML = `<div class="empty">まだ回答履歴はありません。</div>`;
@@ -255,7 +383,7 @@ function renderHistory() {
           <strong>${escapeHtml(response.surveyTitle)}</strong>
           <span class="meta">${formatDate(response.submittedAt)}</span>
           ${response.answers
-            .map((answer) => `<p><strong>${escapeHtml(answer.label)}</strong><br />${escapeHtml(answer.value || "未回答")}</p>`)
+            .map((answer) => `<div class="history-answer"><strong>${escapeHtml(answer.label)}</strong><br />${renderAnswerValue(answer)}</div>`)
             .join("")}
         </article>
       `,

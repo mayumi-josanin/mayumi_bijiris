@@ -131,6 +131,33 @@ function renderCompactResponse(response) {
   `;
 }
 
+function renderAnswerValue(answer) {
+  if (Array.isArray(answer.files) && answer.files.length) {
+    return `
+      <div class="photo-list">
+        ${answer.files
+          .map(
+            (file) => `
+              <a class="photo-thumb" href="${escapeHtml(file.dataUrl)}" download="${escapeHtml(file.name)}">
+                <img src="${escapeHtml(file.dataUrl)}" alt="${escapeHtml(file.name)}" />
+                <span>${escapeHtml(file.name)}</span>
+              </a>
+            `,
+          )
+          .join("")}
+      </div>
+    `;
+  }
+  return escapeHtml(answer.value || "未回答");
+}
+
+function formatAnswerForCsv(answer) {
+  if (Array.isArray(answer.files) && answer.files.length) {
+    return `${answer.label}: ${answer.files.map((file) => file.name).join(", ")}`;
+  }
+  return `${answer.label}: ${answer.value || ""}`;
+}
+
 function renderFilters() {
   const surveyFilter = document.querySelector("#surveyFilter");
   const current = surveyFilter.value;
@@ -195,7 +222,7 @@ function renderResponseCard(response) {
             (answer) => `
               <div class="answer-item">
                 <strong>${escapeHtml(answer.label)}</strong><br />
-                ${escapeHtml(answer.value || "未回答")}
+                ${renderAnswerValue(answer)}
               </div>
             `,
           )
@@ -313,7 +340,7 @@ function exportCsv() {
       response.surveyTitle,
       STATUS_LABELS[normalizeStatus(response.status)],
       response.adminMemo || "",
-      response.answers.map((answer) => `${answer.label}: ${answer.value}`).join(" / "),
+      response.answers.map(formatAnswerForCsv).join(" / "),
     ]),
   ];
   const csv = rows

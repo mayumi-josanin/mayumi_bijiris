@@ -4,6 +4,7 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { URL } = require("node:url");
+const { makeDefaultSurveys } = require("./default-surveys");
 
 const ROOT_DIR = __dirname;
 const STATIC_APPS = {
@@ -19,7 +20,10 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
 const SESSION_SECRET =
   process.env.SESSION_SECRET || "change-this-secret-before-production";
 const TOKEN_TTL_SECONDS = 60 * 60 * 8;
-const BODY_LIMIT_BYTES = 1024 * 1024;
+const BODY_LIMIT_BYTES = 12 * 1024 * 1024;
+const PHOTO_FILE_LIMIT = 6;
+const PHOTO_DATA_URL_LIMIT_BYTES = 2.5 * 1024 * 1024;
+const QUESTION_TYPES = ["text", "textarea", "rating", "choice", "checkbox", "photo"];
 
 let writeQueue = Promise.resolve();
 
@@ -102,61 +106,8 @@ function requireAdmin(req, res) {
 }
 
 function seedDb() {
-  const firstSurveyId = id("survey");
-  const secondSurveyId = id("survey");
   return {
-    surveys: [
-      {
-        id: firstSurveyId,
-        title: "ご利用満足度アンケート",
-        description: "サービスをより良くするため、率直なご意見をお聞かせください。",
-        status: "published",
-        createdAt: now(),
-        updatedAt: now(),
-        questions: [
-          {
-            id: id("question"),
-            label: "今回のサービス全体の満足度を教えてください。",
-            type: "rating",
-            options: [],
-          },
-          {
-            id: id("question"),
-            label: "スタッフの対応はいかがでしたか。",
-            type: "choice",
-            options: ["とても良い", "良い", "普通", "改善してほしい"],
-          },
-          {
-            id: id("question"),
-            label: "印象に残った点や改善してほしい点を教えてください。",
-            type: "textarea",
-            options: [],
-          },
-        ],
-      },
-      {
-        id: secondSurveyId,
-        title: "新サービス希望アンケート",
-        description: "今後受けたいサービスや相談したい内容をお選びください。",
-        status: "published",
-        createdAt: now(),
-        updatedAt: now(),
-        questions: [
-          {
-            id: id("question"),
-            label: "興味のある内容を選んでください。",
-            type: "choice",
-            options: ["個別相談", "資料作成", "業務効率化", "その他"],
-          },
-          {
-            id: id("question"),
-            label: "具体的に相談したい内容があれば入力してください。",
-            type: "textarea",
-            options: [],
-          },
-        ],
-      },
-    ],
+    surveys: makeDefaultSurveys(now()),
     responses: [],
   };
 }
@@ -217,6 +168,10 @@ function normalizeResponseStatus(status) {
   return ["new", "checked", "done"].includes(status) ? status : "new";
 }
 
+function isChoiceType(type) {
+  return type === "choice" || type === "checkbox";
+}
+
 function validateSurveyPayload(payload, existing) {
   const title = normalizeText(payload.title);
   const description = normalizeText(payload.description);
@@ -228,7 +183,7 @@ function validateSurveyPayload(payload, existing) {
   if (!questions.length) throw new Error("質問は1つ以上必要です。");
 
   const normalizedQuestions = questions.map((question) => {
-    const type = ["text", "textarea", "rating", "choice"].includes(question.type)
+    const type = QUESTION_TYPES.includes(question.type)
       ? question.type
       : "text";
     const label = normalizeText(question.label);
@@ -237,7 +192,7 @@ function validateSurveyPayload(payload, existing) {
       : [];
 
     if (!label) throw new Error("質問文を入力してください。");
-    if (type === "choice" && options.length < 2) {
+    if (isChoiceType(type) && options.length < 2) {
       throw new Error("選択式の質問は選択肢を2つ以上入力してください。");
     }
 
@@ -245,7 +200,8 @@ function validateSurveyPayload(payload, existing) {
       id: question.id || id("question"),
       label,
       type,
-      options: type === "choice" ? options : [],
+      required: question.required === false ? false : true,
+      options: isChoiceType(type) ? options : [],
     };
   });
 
@@ -258,6 +214,24 @@ function validateSurveyPayload(payload, existing) {
     createdAt: existing?.createdAt || now(),
     updatedAt: now(),
   };
+}
+
+function normalizePhotoFiles(files) {
+  if (!Array.isArray(files)) return [];
+  return files
+    .slice(0, PHOTO_FILE_LIMIT)
+    .map((file) => {
+      const name = normalizeText(file?.name).slice(0, 140) || "photo.jpg";
+      const type = normalizeText(file?.type) || "image/jpeg";
+      const dataUrl = String(file?.dataUrl || "");
+      if (!/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(dataUrl)) {
+        throw new Error("写真データの形式が正しくありません。");
+      }
+      if (Buffer.byteLength(dataUrl, "utf8") > PHOTO_DATA_URL_LIMIT_BYTES) {
+        throw new Error("写真データが大きすぎます。");
+      }
+      return { name, type, dataUrl };
+    });
 }
 
 function validateResponsePayload(db, payload) {
@@ -276,17 +250,51 @@ function validateResponsePayload(db, payload) {
   const answerMap = new Map(
     (Array.isArray(payload.answers) ? payload.answers : []).map((answer) => [
       answer.questionId,
-      normalizeText(answer.value),
+      answer,
     ]),
   );
 
   const answers = survey.questions.map((question) => {
-    const value = answerMap.get(question.id) || "";
-    if (!value) throw new Error("未回答の質問があります。");
+    const answer = answerMap.get(question.id) || {};
+    const required = question.required !== false;
+    if (question.type === "photo") {
+      const files = normalizePhotoFiles(answer.files);
+      if (required && !files.length) throw new Error("未回答の質問があります。");
+      return {
+        questionId: question.id,
+        label: question.label,
+        type: question.type,
+        value: files.length ? `${files.length}枚の写真` : "",
+        files,
+      };
+    }
+
+    const rawValue = answer.value;
+    const values = Array.isArray(rawValue)
+      ? rawValue.map(normalizeText).filter(Boolean)
+      : [normalizeText(rawValue)].filter(Boolean);
+    const value = values.join(", ");
+
+    if (required && !value) throw new Error("未回答の質問があります。");
+    if (!value) {
+      return {
+        questionId: question.id,
+        label: question.label,
+        type: question.type,
+        value: "",
+      };
+    }
+
     if (question.type === "rating" && !["1", "2", "3", "4", "5"].includes(value)) {
       throw new Error("評価は1から5で回答してください。");
     }
     if (question.type === "choice" && !question.options.includes(value)) {
+      throw new Error("選択肢から回答してください。");
+    }
+    if (
+      question.type === "checkbox" &&
+      values.some((item) => !question.options.includes(item))
+    ) {
       throw new Error("選択肢から回答してください。");
     }
     return {
