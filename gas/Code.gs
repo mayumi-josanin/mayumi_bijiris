@@ -17,7 +17,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260411-9";
+var VERSION = "20260411-16";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -333,9 +333,13 @@ function mergeDefaultSurveyFields_(survey) {
 
   normalizedSurvey.questions = normalizedSurvey.questions.map(function (question) {
     var defaultQuestion = defaultQuestionMap[normalizeText_(question && question.id)];
-    if (!defaultQuestion || question.visibleWhen) return question;
+    if (!defaultQuestion) return question;
+    var currentConditions = getQuestionVisibilityConditions_(question);
+    if (currentConditions.length) return question;
+    var defaultConditions = getQuestionVisibilityConditions_(defaultQuestion);
     return Object.assign({}, question, {
-      visibleWhen: defaultQuestion.visibleWhen || null,
+      visibilityConditions: defaultConditions,
+      visibleWhen: defaultConditions.length ? defaultConditions[0] : null,
     });
   });
   if (!normalizedSurvey.introMessage) normalizedSurvey.introMessage = defaults.introMessage || defaults.description || "";
@@ -403,7 +407,10 @@ function validateSurveyPayload_(payload, existing) {
     var options = Array.isArray(question && question.options)
       ? question.options.map(normalizeText_).filter(Boolean)
       : [];
-    var visibleWhen = validateVisibleWhen_(question && question.visibleWhen);
+    var visibilityConditions = validateVisibilityConditions_(
+      question && question.visibilityConditions,
+      question && question.visibleWhen
+    );
 
     if (!label) throw new Error("質問文を入力してください。");
     if (isChoiceType_(type) && options.length < 2) {
@@ -416,7 +423,8 @@ function validateSurveyPayload_(payload, existing) {
       type: type,
       required: question && question.required === false ? false : true,
       options: isChoiceType_(type) ? options : [],
-      visibleWhen: visibleWhen,
+      visibilityConditions: visibilityConditions,
+      visibleWhen: visibilityConditions.length ? visibilityConditions[0] : null,
     };
   });
 
@@ -450,6 +458,22 @@ function validateVisibleWhen_(visibleWhen) {
     questionId: questionId,
     value: value,
   };
+}
+
+function validateVisibilityConditions_(conditions, fallbackVisibleWhen) {
+  var normalized = Array.isArray(conditions)
+    ? conditions.map(validateVisibleWhen_).filter(Boolean)
+    : [];
+  if (normalized.length) return normalized;
+  var fallback = validateVisibleWhen_(fallbackVisibleWhen);
+  return fallback ? [fallback] : [];
+}
+
+function getQuestionVisibilityConditions_(question) {
+  return validateVisibilityConditions_(
+    question && question.visibilityConditions,
+    question && question.visibleWhen
+  );
 }
 
 function normalizeDateTime_(value) {
@@ -1092,11 +1116,12 @@ function saveResponse_(body) {
 function buildAnswers_(survey, rawAnswers, responseId, customerName) {
   var rawAnswerMap = buildRawAnswerMap_(rawAnswers);
   return survey.questions.map(function (question) {
-    var visible = isQuestionVisible_(question, rawAnswerMap);
+    var visible = isQuestionVisible_(question, rawAnswerMap, survey);
+    var required = isQuestionRequired_(question, visible, survey);
     var raw = findRawAnswer_(rawAnswers, question.id);
     if (question.type === "photo") {
       var files = visible ? syncPhotoFiles_([], raw.files || [], responseId, question.id, customerName) : [];
-      if (visible && question.required !== false && !files.length) {
+      if (required && !files.length) {
         throw new Error("未回答の質問があります。");
       }
       return {
@@ -1110,7 +1135,7 @@ function buildAnswers_(survey, rawAnswers, responseId, customerName) {
 
     var values = Array.isArray(raw.value) ? raw.value : [raw.value];
     values = values.map(normalizeText_).filter(Boolean);
-    if (visible && question.required !== false && !values.length) {
+    if (required && !values.length) {
       throw new Error("未回答の質問があります。");
     }
     if (visible && question.type === "rating" && values[0] && ["1", "2", "3", "4", "5"].indexOf(values[0]) === -1) {
@@ -1192,8 +1217,8 @@ function buildUpdatedPublicResponse_(existing, survey, rawAnswers) {
 
   var answers = survey.questions.map(function (question) {
     var raw = findRawAnswer_(rawAnswers, question.id);
-    var visible = isQuestionVisible_(question, rawAnswerMap);
-    var required = question.required !== false;
+    var visible = isQuestionVisible_(question, rawAnswerMap, survey);
+    var required = isQuestionRequired_(question, visible, survey);
     if (question.type === "photo") {
       var existingAnswer = answerMap[question.id] || { files: [] };
       var files = visible
@@ -1569,7 +1594,8 @@ function normalizeAdminAnswers_(survey, existingAnswers, answers) {
       type: question.type,
       value: "",
     };
-    var visible = isQuestionVisible_(question, rawAnswerMap);
+    var visible = isQuestionVisible_(question, rawAnswerMap, survey);
+    var required = isQuestionRequired_(question, visible, survey);
     if (question.type === "photo") {
       return visible ? existing : Object.assign({}, existing, { value: "", files: [] });
     }
@@ -1579,7 +1605,7 @@ function normalizeAdminAnswers_(survey, existingAnswers, answers) {
     values = values.map(normalizeText_).filter(Boolean);
     var value = visible ? values.join(", ") : "";
 
-    if (visible && question.required !== false && !value) {
+    if (required && !value) {
       throw new Error("未回答の質問があります。");
     }
     if (visible && question.type === "rating" && value && ["1", "2", "3", "4", "5"].indexOf(value) === -1) {
@@ -1874,8 +1900,38 @@ function buildRawAnswerMap_(answers) {
   return map;
 }
 
-function isQuestionVisible_(question, rawAnswerMap) {
-  if (!question || !question.visibleWhen) return true;
+function isLegacyTicketEndLastPhotoQuestion_(question, survey) {
+  return survey && survey.id === "survey_bijiris_ticket_end" && question && question.id === "q_ticket_end_photo_last";
+}
+
+function isLegacyTicketEndLastPhotoVisible_(rawAnswerMap) {
+  var ticketSizeValues = rawAnswerMap && rawAnswerMap.q_ticket_end_ticket_size;
+  var ticketRoundValues = rawAnswerMap && rawAnswerMap.q_ticket_end_ticket_round;
+  var ticketSize = Array.isArray(ticketSizeValues) && ticketSizeValues.length ? normalizeText_(ticketSizeValues[0]) : "";
+  var ticketRound = Array.isArray(ticketRoundValues) && ticketRoundValues.length ? normalizeText_(ticketRoundValues[0]) : "";
+  return (
+    (ticketSize === "6回券" && ticketRound === "6回目") ||
+    (ticketSize === "10回券" && ticketRound === "10回目")
+  );
+}
+
+function isQuestionVisible_(question, rawAnswerMap, survey) {
+  var conditions = getQuestionVisibilityConditions_(question);
+  if (conditions.length) {
+    return conditions.every(function (condition) {
+      var values = rawAnswerMap && rawAnswerMap[condition.questionId];
+      if (!Array.isArray(values) || !values.length) return false;
+      var expected = normalizeText_(condition.value);
+      return values.some(function (value) {
+        return normalizeText_(value) === expected;
+      });
+    });
+  }
+  if (isLegacyTicketEndLastPhotoQuestion_(question, survey)) {
+    return isLegacyTicketEndLastPhotoVisible_(rawAnswerMap || {});
+  }
+  if (!question) return true;
+  if (!question.visibleWhen) return true;
   var map = rawAnswerMap || {};
   var values = map[question.visibleWhen.questionId];
   if (!Array.isArray(values) || !values.length) return false;
@@ -1883,6 +1939,14 @@ function isQuestionVisible_(question, rawAnswerMap) {
   return values.some(function (value) {
     return normalizeText_(value) === expected;
   });
+}
+
+function isQuestionRequired_(question, visible, survey) {
+  if (!visible) return false;
+  if (isLegacyTicketEndLastPhotoQuestion_(question, survey) && !getQuestionVisibilityConditions_(question).length) {
+    return true;
+  }
+  return question && question.required === false ? false : true;
 }
 
 function notifyNewResponse_(response) {
