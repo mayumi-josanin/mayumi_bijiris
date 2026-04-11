@@ -14,7 +14,7 @@ var CUSTOMER_MEMOS_PROPERTY_KEY = "CUSTOMER_MEMOS_JSON";
 var AUDIT_LOGS_PROPERTY_KEY = "AUDIT_LOGS_JSON";
 var ERROR_LOGS_PROPERTY_KEY = "ERROR_LOGS_JSON";
 var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
-var VERSION = "20260411-6";
+var VERSION = "20260411-7";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -511,12 +511,17 @@ function normalizeSurveyOrder_(surveys) {
 }
 
 function getPreferences_() {
-  var stored = parseJson_(PropertiesService.getScriptProperties().getProperty(PREFERENCES_PROPERTY_KEY), {});
-  return {
+  var properties = PropertiesService.getScriptProperties();
+  var stored = parseJson_(properties.getProperty(PREFERENCES_PROPERTY_KEY), {});
+  var preferences = {
     notificationEnabled: stored && stored.notificationEnabled !== false,
     notificationEmail: normalizeEmail_(stored && stored.notificationEmail) || normalizeEmail_(getOwnerEmail_()),
-    dataPolicyText: normalizeText_(stored && stored.dataPolicyText) || DEFAULT_DATA_POLICY_TEXT_(),
+    dataPolicyText: normalizeDataPolicyText_(stored && stored.dataPolicyText) || DEFAULT_DATA_POLICY_TEXT_(),
   };
+  if (JSON.stringify(stored || {}) !== JSON.stringify(preferences)) {
+    properties.setProperty(PREFERENCES_PROPERTY_KEY, JSON.stringify(preferences));
+  }
+  return preferences;
 }
 
 function updatePreferences_(payload) {
@@ -524,7 +529,7 @@ function updatePreferences_(payload) {
   var next = {
     notificationEnabled: payload && payload.notificationEnabled === false ? false : true,
     notificationEmail: normalizeEmail_(payload && payload.notificationEmail) || current.notificationEmail,
-    dataPolicyText: normalizeText_(payload && payload.dataPolicyText) || current.dataPolicyText,
+    dataPolicyText: normalizeDataPolicyText_(payload && payload.dataPolicyText) || current.dataPolicyText,
   };
 
   if (next.notificationEnabled && !next.notificationEmail) {
@@ -540,7 +545,14 @@ function updatePreferences_(payload) {
 }
 
 function DEFAULT_DATA_POLICY_TEXT_() {
-  return "ご回答内容と添付写真は、まゆみ助産院のアンケート管理と施術サポートのために利用します。保存先は Google スプレッドシートおよび Google ドライブです。";
+  return "ご回答内容と添付写真は、まゆみ助産院のアンケート管理と施術サポートのために利用します。";
+}
+
+function normalizeDataPolicyText_(value) {
+  return normalizeText_(value)
+    .replace(/保存先は Google スプレッドシートおよび Google ドライブです。?/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getCustomerMemos_() {
