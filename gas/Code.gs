@@ -53,6 +53,7 @@ var SURVEYS = [
       { id: "q_ticket_end_photo_last", label: "計測写真(6回目or10回目)", type: "photo", required: false, options: [] },
       { id: "q_ticket_end_consultation", label: "ご質問・ご相談(自由記述)", type: "textarea", required: false, options: [] },
       { id: "q_ticket_end_ticket_size", label: "回数券の枚数", type: "choice", required: true, options: ["6回券", "10回券"] },
+      { id: "q_ticket_end_ticket_round", label: "回数券の何回目ですか？", type: "choice", required: true, options: ["1回目", "2回目", "3回目", "4回目", "5回目", "6回目", "7回目", "8回目", "9回目", "10回目"] },
     ],
   },
   {
@@ -150,6 +151,17 @@ function handleGet_(e) {
 function handlePost_(body) {
   if (body.action === "submitResponse") {
     return saveResponse_(body);
+  }
+  if (body.action === "adminUpdateResponse") {
+    requireAdmin_(body.token);
+    return {
+      response: updateResponse_(
+        body.responseId,
+        body.payload && body.payload.status,
+        body.payload && body.payload.adminMemo,
+        body.payload && body.payload.answers
+      ),
+    };
   }
   throw new Error("API が見つかりません。");
 }
@@ -408,21 +420,31 @@ function appendSurveyRow_(survey, response) {
   sheet.appendRow(row);
 }
 
-function updateResponse_(responseId, status, adminMemo) {
+function updateResponse_(responseId, status, adminMemo, answers) {
   ensureSpreadsheet_();
   var sheet = getSpreadsheet_().getSheetByName(MASTER_SHEET_NAME);
   var rowIndex = findMasterRowIndex_(responseId);
   if (!rowIndex) throw new Error("回答が見つかりません。");
+  var existing = getResponseById_(responseId);
+  if (!existing) throw new Error("回答が見つかりません。");
+  var survey = findSurvey_(existing.surveyId);
   var normalizedStatus = normalizeStatus_(status);
   var memo = normalizeText_(adminMemo);
+  var normalizedAnswers = normalizeAdminAnswers_(survey, existing.answers, answers);
+  var files = collectFilesFromAnswers_(normalizedAnswers);
   var managedAt = new Date().toISOString();
   sheet.getRange(rowIndex, 8).setValue(normalizedStatus);
   sheet.getRange(rowIndex, 9).setValue(memo);
+  sheet.getRange(rowIndex, 10).setValue(JSON.stringify(normalizedAnswers));
+  sheet.getRange(rowIndex, 11).setValue(JSON.stringify(files));
   sheet.getRange(rowIndex, 12).setValue(managedAt);
 
-  var response = getResponseById_(responseId);
-  updateSurveySheetManagement_(response.surveyTitle, responseId, normalizedStatus, memo);
-  return response;
+  updateSurveySheetResponse_(survey, Object.assign({}, existing, {
+    status: normalizedStatus,
+    adminMemo: memo,
+    answers: normalizedAnswers,
+  }));
+  return getResponseById_(responseId);
 }
 
 function deleteResponse_(responseId) {
@@ -447,6 +469,61 @@ function deleteResponseFiles_(response) {
   });
 }
 
+function collectFilesFromAnswers_(answers) {
+  var files = [];
+  (Array.isArray(answers) ? answers : []).forEach(function (answer) {
+    if (Array.isArray(answer.files)) files = files.concat(answer.files);
+  });
+  return files;
+}
+
+function normalizeAdminAnswers_(survey, existingAnswers, answers) {
+  var existingMap = {};
+  (Array.isArray(existingAnswers) ? existingAnswers : []).forEach(function (answer) {
+    existingMap[answer.questionId] = answer;
+  });
+
+  var answerMap = {};
+  (Array.isArray(answers) ? answers : []).forEach(function (answer) {
+    answerMap[answer.questionId] = answer;
+  });
+
+  return survey.questions.map(function (question) {
+    var existing = existingMap[question.id] || {
+      questionId: question.id,
+      label: question.label,
+      type: question.type,
+      value: "",
+    };
+    if (question.type === "photo") return existing;
+
+    var raw = answerMap[question.id] || {};
+    var values = Array.isArray(raw.value) ? raw.value : [raw.value];
+    values = values.map(normalizeText_).filter(Boolean);
+    var value = values.join(", ");
+
+    if (question.required !== false && !value) {
+      throw new Error("未回答の質問があります。");
+    }
+    if (question.type === "rating" && value && ["1", "2", "3", "4", "5"].indexOf(value) === -1) {
+      throw new Error("評価は1から5で回答してください。");
+    }
+    if (question.type === "choice" && value && question.options.indexOf(value) === -1) {
+      throw new Error("選択肢から回答してください。");
+    }
+    if (question.type === "checkbox" && values.some(function (item) { return question.options.indexOf(item) === -1; })) {
+      throw new Error("選択肢から回答してください。");
+    }
+
+    return {
+      questionId: question.id,
+      label: question.label,
+      type: question.type,
+      value: value,
+    };
+  });
+}
+
 function updateSurveySheetManagement_(sheetName, responseId, status, adminMemo) {
   var sheet = getSpreadsheet_().getSheetByName(sheetName);
   if (!sheet) return;
@@ -454,6 +531,31 @@ function updateSurveySheetManagement_(sheetName, responseId, status, adminMemo) 
   if (!rowIndex) return;
   sheet.getRange(rowIndex, 6).setValue(status);
   sheet.getRange(rowIndex, 7).setValue(adminMemo);
+}
+
+function updateSurveySheetResponse_(survey, response) {
+  var sheet = ensureSurveySheet_(survey);
+  var rowIndex = findRowIndexByColumn_(sheet, 2, response.id);
+  if (!rowIndex) return;
+
+  var answerMap = {};
+  response.answers.forEach(function (answer) {
+    answerMap[answer.questionId] = answer.value || "";
+  });
+
+  var row = [
+    response.submittedAt,
+    response.id,
+    response.customerClientId,
+    response.customerName,
+    response.customerEmail,
+    response.status,
+    response.adminMemo,
+  ];
+  survey.questions.forEach(function (question) {
+    row.push(answerMap[question.id] || "");
+  });
+  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
 }
 
 function deleteRowByResponseId_(sheet, responseId, column) {
