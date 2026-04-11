@@ -17,7 +17,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260411-8";
+var VERSION = "20260411-9";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -560,7 +560,7 @@ function getPreferences_() {
     backupHour: normalizeBackupHour_(stored && stored.backupHour),
     retentionDays: normalizeRetentionDays_(stored && stored.retentionDays),
     recoveryMemo: normalizeText_(stored && stored.recoveryMemo) || DEFAULT_RECOVERY_MEMO_(),
-    twoFactorEnabled: stored && stored.twoFactorEnabled === false ? false : true,
+    twoFactorEnabled: false,
   };
   if (JSON.stringify(stored || {}) !== JSON.stringify(preferences)) {
     properties.setProperty(PREFERENCES_PROPERTY_KEY, JSON.stringify(preferences));
@@ -582,7 +582,7 @@ function updatePreferences_(payload) {
     backupHour: normalizeBackupHour_(payload && payload.backupHour),
     retentionDays: normalizeRetentionDays_(payload && payload.retentionDays),
     recoveryMemo: normalizeText_(payload && payload.recoveryMemo) || current.recoveryMemo,
-    twoFactorEnabled: payload && payload.twoFactorEnabled === false ? false : true,
+    twoFactorEnabled: false,
   };
 
   if (next.notificationEnabled && !next.notificationEmail) {
@@ -596,7 +596,7 @@ function updatePreferences_(payload) {
     notificationEmail: next.notificationEmail,
     autoBackupEnabled: next.autoBackupEnabled,
     retentionDays: next.retentionDays,
-    twoFactorEnabled: next.twoFactorEnabled,
+    twoFactorEnabled: false,
   });
   return next;
 }
@@ -1743,23 +1743,6 @@ function adminLogin_(loginId, password) {
       loginId: normalizedLoginId,
     });
     throw new Error("ログインIDまたはパスワードが違います。");
-  }
-  var preferences = getPreferences_();
-  if (preferences.twoFactorEnabled) {
-    var session = createOtpSession_(user);
-    try {
-      sendOtpEmail_(user, session);
-    } catch (error) {
-      appendErrorLog_("adminLoginOtp", error.message || "確認コード送信失敗", {
-        loginId: normalizedLoginId,
-      });
-      throw error;
-    }
-    return {
-      requiresOtp: true,
-      sessionId: session.id,
-      expiresAt: new Date(session.expiresAt).toISOString(),
-    };
   }
   clearLoginFailures_(normalizedLoginId);
   var expiresAt = Date.now() + 8 * 60 * 60 * 1000;
