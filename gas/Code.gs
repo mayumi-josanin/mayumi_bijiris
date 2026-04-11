@@ -14,12 +14,16 @@ var CUSTOMER_MEMOS_PROPERTY_KEY = "CUSTOMER_MEMOS_JSON";
 var AUDIT_LOGS_PROPERTY_KEY = "AUDIT_LOGS_JSON";
 var ERROR_LOGS_PROPERTY_KEY = "ERROR_LOGS_JSON";
 var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
-var VERSION = "20260411-7";
+var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
+var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
+var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
+var VERSION = "20260411-8";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
 var LOGIN_MAX_ATTEMPTS = 5;
 var MAX_LOG_ENTRIES = 200;
+var OTP_TTL_MS = 10 * 60 * 1000;
 
 var MASTER_HEADERS = [
   "送信日時",
@@ -41,6 +45,8 @@ var SURVEYS = [
     id: "survey_bijiris_session",
     title: "ビジリス施術アンケート",
     description: "ビジリス施術後の体感やご相談内容をお聞かせください。",
+    introMessage: "本日の施術後の体感や、今後のサポートに必要な内容をご記入ください。",
+    completionMessage: "ビジリス施術アンケートのご回答ありがとうございました。",
     status: "published",
     questions: [
       { id: "q_bijiris_session_consultation", label: "ご質問・ご相談", type: "textarea", required: false, options: [] },
@@ -57,6 +63,8 @@ var SURVEYS = [
     id: "survey_bijiris_ticket_end",
     title: "ビジリス回数券終了アンケート",
     description: "回数券終了時点での体感や日常生活の変化をお聞かせください。",
+    introMessage: "回数券終了時点での変化やご要望を確認し、今後のご案内に活用します。",
+    completionMessage: "ビジリス回数券終了アンケートのご回答ありがとうございました。",
     status: "published",
     questions: [
       { id: "q_ticket_end_feeling", label: "本日のビジリスの体感はいかがでしたか？", type: "textarea", required: true, options: [] },
@@ -74,6 +82,8 @@ var SURVEYS = [
     id: "survey_bijiris_monitor_end",
     title: "モニター終了アンケート",
     description: "モニター終了時点での体感、変化、今後のご希望をお聞かせください。",
+    introMessage: "モニター終了時点での変化や今後のご希望を確認し、次のご提案に活用します。",
+    completionMessage: "モニター終了アンケートのご回答ありがとうございました。",
     status: "published",
     questions: [
       { id: "q_monitor_end_usage", label: "ビジリスの刺激や使用感はいかがでしたか？", type: "checkbox", required: true, options: ["痛気持ちよくて効いている感じがした", "最初は驚いたが慣れた", "リラックスして座っていられた", "その他"] },
@@ -108,6 +118,7 @@ function doPost(e) {
 
 function setup() {
   ensureSpreadsheet_();
+  syncMaintenanceTrigger_(getPreferences_());
   var credentials = getAdminCredentials_();
   var rootFolder = getRootPhotoFolder_();
   return {
@@ -128,6 +139,8 @@ function handleGet_(e) {
     return {
       surveys: getPublicSurveys_(),
       dataPolicyText: getPreferences_().dataPolicyText,
+      requireConsent: getPreferences_().requireConsent,
+      consentText: getPreferences_().consentText,
       version: VERSION,
     };
   }
@@ -136,21 +149,24 @@ function handleGet_(e) {
       responses: getResponses_({
         clientId: params.clientId,
         customerName: params.name,
+        includeTrashed: false,
       }),
     };
   }
   if (action === "adminLogin") return adminLogin_(params.loginId, params.password);
+  if (action === "adminVerifyOtp") return verifyAdminOtp_(params.sessionId, params.code);
 
   requireAdmin_(params.token);
   if (action === "adminInfo") return getAdminInfo_();
   if (action === "adminUpdateCredentials") {
     return updateAdminCredentials_(params.loginId, params.password);
   }
+  if (action === "adminUsers") return { adminUsers: getAdminUsers_().map(publicAdminUser_) };
   if (action === "adminSurveys") return { surveys: getSurveys_() };
   if (action === "adminPreferences") return { preferences: getPreferences_() };
   if (action === "adminLogs") return getLogs_();
   if (action === "adminCustomerMemos") return { memos: getCustomerMemos_() };
-  if (action === "adminResponses") return { responses: getResponses_({}) };
+  if (action === "adminResponses") return { responses: getResponses_({ includeTrashed: true }) };
   if (action === "adminUpdate") {
     return {
       response: updateResponse_(params.responseId, params.status, params.adminMemo),
@@ -163,9 +179,10 @@ function handleGet_(e) {
   if (action === "adminExport") {
     return {
       surveys: getSurveys_(),
-      responses: getResponses_({}),
+      responses: getResponses_({ includeTrashed: true }),
       preferences: getPreferences_(),
       customerMemos: getCustomerMemos_(),
+      adminUsers: getAdminUsers_().map(publicAdminUser_),
       exportedAt: new Date().toISOString(),
     };
   }
@@ -228,6 +245,16 @@ function handlePost_(body) {
     return {
       memos: updateCustomerMemo_(body.customerName, body.memo),
     };
+  }
+  if (body.action === "adminUpdateUsers") {
+    requireAdmin_(body.token);
+    return {
+      adminUsers: updateAdminUsers_(body.payload && body.payload.adminUsers),
+    };
+  }
+  if (body.action === "adminRunMaintenance") {
+    requireAdmin_(body.token);
+    return runScheduledMaintenance();
   }
   throw new Error("API が見つかりません。");
 }
@@ -311,6 +338,10 @@ function mergeDefaultSurveyFields_(survey) {
       visibleWhen: defaultQuestion.visibleWhen || null,
     });
   });
+  if (!normalizedSurvey.introMessage) normalizedSurvey.introMessage = defaults.introMessage || defaults.description || "";
+  if (!normalizedSurvey.completionMessage) {
+    normalizedSurvey.completionMessage = defaults.completionMessage || "ご回答ありがとうございました。";
+  }
   return normalizedSurvey;
 }
 
@@ -345,6 +376,8 @@ function isChoiceType_(type) {
 function validateSurveyPayload_(payload, existing) {
   var title = normalizeText_(payload && payload.title);
   var description = normalizeText_(payload && payload.description);
+  var introMessage = normalizeText_(payload && payload.introMessage) || description;
+  var completionMessage = normalizeText_(payload && payload.completionMessage) || "ご回答ありがとうございました。";
   var status = normalizeSurveyStatus_(payload && payload.status);
   var questions = Array.isArray(payload && payload.questions) ? payload.questions : [];
   var surveys = loadSurveysWithoutValidation_();
@@ -391,6 +424,8 @@ function validateSurveyPayload_(payload, existing) {
     id: existing && existing.id ? existing.id : normalizeText_(payload && payload.id) || makeId_("survey"),
     title: title,
     description: description,
+    introMessage: introMessage,
+    completionMessage: completionMessage,
     status: status,
     sortOrder: Number.isFinite(sortOrder) ? sortOrder : surveys.length,
     acceptingResponses: acceptingResponses,
@@ -516,7 +551,16 @@ function getPreferences_() {
   var preferences = {
     notificationEnabled: stored && stored.notificationEnabled !== false,
     notificationEmail: normalizeEmail_(stored && stored.notificationEmail) || normalizeEmail_(getOwnerEmail_()),
+    notificationSubject: normalizeText_(stored && stored.notificationSubject) || DEFAULT_NOTIFICATION_SUBJECT_(),
+    notificationBody: normalizeText_(stored && stored.notificationBody) || DEFAULT_NOTIFICATION_BODY_(),
     dataPolicyText: normalizeDataPolicyText_(stored && stored.dataPolicyText) || DEFAULT_DATA_POLICY_TEXT_(),
+    requireConsent: stored && stored.requireConsent === false ? false : true,
+    consentText: normalizeText_(stored && stored.consentText) || DEFAULT_CONSENT_TEXT_(),
+    autoBackupEnabled: stored && stored.autoBackupEnabled === false ? false : true,
+    backupHour: normalizeBackupHour_(stored && stored.backupHour),
+    retentionDays: normalizeRetentionDays_(stored && stored.retentionDays),
+    recoveryMemo: normalizeText_(stored && stored.recoveryMemo) || DEFAULT_RECOVERY_MEMO_(),
+    twoFactorEnabled: stored && stored.twoFactorEnabled === false ? false : true,
   };
   if (JSON.stringify(stored || {}) !== JSON.stringify(preferences)) {
     properties.setProperty(PREFERENCES_PROPERTY_KEY, JSON.stringify(preferences));
@@ -529,7 +573,16 @@ function updatePreferences_(payload) {
   var next = {
     notificationEnabled: payload && payload.notificationEnabled === false ? false : true,
     notificationEmail: normalizeEmail_(payload && payload.notificationEmail) || current.notificationEmail,
+    notificationSubject: normalizeText_(payload && payload.notificationSubject) || current.notificationSubject,
+    notificationBody: normalizeText_(payload && payload.notificationBody) || current.notificationBody,
     dataPolicyText: normalizeDataPolicyText_(payload && payload.dataPolicyText) || current.dataPolicyText,
+    requireConsent: payload && payload.requireConsent === false ? false : true,
+    consentText: normalizeText_(payload && payload.consentText) || current.consentText,
+    autoBackupEnabled: payload && payload.autoBackupEnabled === false ? false : true,
+    backupHour: normalizeBackupHour_(payload && payload.backupHour),
+    retentionDays: normalizeRetentionDays_(payload && payload.retentionDays),
+    recoveryMemo: normalizeText_(payload && payload.recoveryMemo) || current.recoveryMemo,
+    twoFactorEnabled: payload && payload.twoFactorEnabled === false ? false : true,
   };
 
   if (next.notificationEnabled && !next.notificationEmail) {
@@ -537,15 +590,314 @@ function updatePreferences_(payload) {
   }
 
   PropertiesService.getScriptProperties().setProperty(PREFERENCES_PROPERTY_KEY, JSON.stringify(next));
+  syncMaintenanceTrigger_(next);
   appendAuditLog_("preferences.update", {
     notificationEnabled: next.notificationEnabled,
     notificationEmail: next.notificationEmail,
+    autoBackupEnabled: next.autoBackupEnabled,
+    retentionDays: next.retentionDays,
+    twoFactorEnabled: next.twoFactorEnabled,
   });
   return next;
 }
 
 function DEFAULT_DATA_POLICY_TEXT_() {
   return "ご回答内容と添付写真は、まゆみ助産院のアンケート管理と施術サポートのために利用します。";
+}
+
+function DEFAULT_NOTIFICATION_SUBJECT_() {
+  return "【まゆみ助産院】新しいアンケート回答";
+}
+
+function DEFAULT_NOTIFICATION_BODY_() {
+  return [
+    "新しいアンケート回答が届きました。",
+    "",
+    "お名前: {{customerName}}",
+    "アンケート: {{surveyTitle}}",
+    "送信日時: {{submittedAt}}",
+    "回答ID: {{responseId}}",
+  ].join("\n");
+}
+
+function DEFAULT_CONSENT_TEXT_() {
+  return "回答内容と添付写真の利用に同意します。";
+}
+
+function DEFAULT_RECOVERY_MEMO_() {
+  return "障害時は Apps Script の実行ログ、スプレッドシート、Google ドライブの保存フォルダを確認してください。";
+}
+
+function normalizeBackupHour_(value) {
+  var hour = Number(value);
+  return Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : 3;
+}
+
+function normalizeRetentionDays_(value) {
+  var days = Number(value);
+  return Number.isFinite(days) && days >= 0 ? Math.floor(days) : 365;
+}
+
+function publicAdminUser_(user) {
+  return {
+    id: normalizeText_(user && user.id),
+    username: normalizeText_(user && user.username),
+    email: normalizeEmail_(user && user.email),
+    active: user && user.active === false ? false : true,
+  };
+}
+
+function normalizeAdminUsers_(users, currentUsers) {
+  var current = Array.isArray(currentUsers) ? currentUsers : [];
+  var currentById = {};
+  current.forEach(function (user) {
+    currentById[user.id] = user;
+  });
+
+  var normalizedUsers = (Array.isArray(users) ? users : []).map(function (user, index) {
+    var id = normalizeText_(user && user.id) || makeId_("admin");
+    var username = normalizeText_(user && user.username);
+    var existing = currentById[id] || null;
+    var password = normalizeText_(user && user.password) || (existing && existing.password) || "";
+    if (!username) throw new Error("管理者ログインIDを入力してください。");
+    if (!password || password.length < 4) throw new Error("管理者パスワードは4文字以上で入力してください。");
+    return {
+      id: id,
+      username: username,
+      password: password,
+      email: normalizeEmail_(user && user.email),
+      active: user && user.active === false ? false : true,
+      sortOrder: index,
+    };
+  });
+
+  if (!normalizedUsers.length) {
+    throw new Error("管理者アカウントは1件以上必要です。");
+  }
+
+  var seen = {};
+  normalizedUsers.forEach(function (user) {
+    if (seen[user.username]) throw new Error("管理者ログインIDが重複しています。");
+    seen[user.username] = true;
+  });
+
+  return normalizedUsers;
+}
+
+function getAdminUsers_() {
+  var properties = PropertiesService.getScriptProperties();
+  var stored = parseJson_(properties.getProperty(ADMIN_USERS_PROPERTY_KEY), null);
+  if (Array.isArray(stored) && stored.length) {
+    var normalized = normalizeAdminUsers_(stored, stored);
+    if (JSON.stringify(stored) !== JSON.stringify(normalized)) {
+      properties.setProperty(ADMIN_USERS_PROPERTY_KEY, JSON.stringify(normalized));
+    }
+    return normalized;
+  }
+
+  var migrated = [{
+    id: "admin_primary",
+    username: normalizeText_(properties.getProperty("ADMIN_USERNAME")) || DEFAULT_ADMIN_USERNAME,
+    password: String(properties.getProperty("ADMIN_PASSWORD") || "") || DEFAULT_ADMIN_PASSWORD,
+    email: normalizeEmail_(getOwnerEmail_()),
+    active: true,
+    sortOrder: 0,
+  }];
+
+  if (migrated[0].username === LEGACY_ADMIN_USERNAME) migrated[0].username = DEFAULT_ADMIN_USERNAME;
+  if (!migrated[0].password || migrated[0].password === LEGACY_ADMIN_PASSWORD) migrated[0].password = DEFAULT_ADMIN_PASSWORD;
+
+  properties.setProperty(ADMIN_USERS_PROPERTY_KEY, JSON.stringify(migrated));
+  properties.setProperty("ADMIN_USERNAME", migrated[0].username);
+  properties.setProperty("ADMIN_PASSWORD", migrated[0].password);
+  return migrated;
+}
+
+function findAdminUserByUsername_(loginId) {
+  var username = normalizeText_(loginId);
+  var users = getAdminUsers_();
+  for (var i = 0; i < users.length; i += 1) {
+    if (users[i].active !== false && users[i].username === username) return users[i];
+  }
+  return null;
+}
+
+function updateAdminUsers_(users) {
+  var normalized = normalizeAdminUsers_(users, getAdminUsers_());
+  PropertiesService.getScriptProperties().setProperty(ADMIN_USERS_PROPERTY_KEY, JSON.stringify(normalized));
+  PropertiesService.getScriptProperties().setProperty("ADMIN_USERNAME", normalized[0].username);
+  PropertiesService.getScriptProperties().setProperty("ADMIN_PASSWORD", normalized[0].password);
+  normalized.forEach(function (user) {
+    clearLoginFailures_(user.username);
+  });
+  appendAuditLog_("admin.users.update", {
+    count: normalized.length,
+  });
+  return normalized.map(publicAdminUser_);
+}
+
+function getOtpSessions_() {
+  return parseJson_(PropertiesService.getScriptProperties().getProperty(OTP_SESSIONS_PROPERTY_KEY), []);
+}
+
+function saveOtpSessions_(sessions) {
+  PropertiesService.getScriptProperties().setProperty(OTP_SESSIONS_PROPERTY_KEY, JSON.stringify(sessions || []));
+}
+
+function pruneOtpSessions_(sessions) {
+  var nowTime = Date.now();
+  return (Array.isArray(sessions) ? sessions : []).filter(function (session) {
+    return Number(session.expiresAt || 0) > nowTime;
+  });
+}
+
+function createOtpSession_(user) {
+  var code = String(Math.floor(100000 + Math.random() * 900000));
+  var session = {
+    id: makeId_("otp"),
+    username: user.username,
+    code: code,
+    expiresAt: Date.now() + OTP_TTL_MS,
+  };
+  var sessions = pruneOtpSessions_(getOtpSessions_());
+  sessions = sessions.filter(function (item) {
+    return item.username !== user.username;
+  });
+  sessions.unshift(session);
+  saveOtpSessions_(sessions);
+  return session;
+}
+
+function sendOtpEmail_(user, session) {
+  var preferences = getPreferences_();
+  var to = normalizeEmail_(user.email) || preferences.notificationEmail || normalizeEmail_(getOwnerEmail_());
+  if (!to) throw new Error("2段階認証メールの送信先が設定されていません。");
+  MailApp.sendEmail(
+    to,
+    "【まゆみ助産院】確認コード",
+    [
+      "確認コードを入力してください。",
+      "",
+      "ログインID: " + user.username,
+      "確認コード: " + session.code,
+      "有効期限: " + new Date(session.expiresAt).toLocaleString("ja-JP"),
+    ].join("\n")
+  );
+}
+
+function verifyAdminOtp_(sessionId, code) {
+  var normalizedSessionId = normalizeText_(sessionId);
+  var normalizedCode = normalizeText_(code);
+  var sessions = pruneOtpSessions_(getOtpSessions_());
+  var session = null;
+  var remaining = [];
+  sessions.forEach(function (item) {
+    if (item.id === normalizedSessionId) {
+      session = item;
+      return;
+    }
+    remaining.push(item);
+  });
+  if (!session) throw new Error("確認コードの有効期限が切れました。もう一度ログインしてください。");
+  if (session.code !== normalizedCode) throw new Error("確認コードが違います。");
+  saveOtpSessions_(remaining);
+  clearLoginFailures_(session.username);
+  var expiresAt = Date.now() + 8 * 60 * 60 * 1000;
+  appendAuditLog_("admin.login.otp", {
+    loginId: session.username,
+  });
+  return {
+    token: makeToken_(session.username, expiresAt),
+    expiresAt: new Date(expiresAt).toISOString(),
+  };
+}
+
+function getBackupFolder_() {
+  var rootFolder = getRootPhotoFolder_();
+  var folders = rootFolder.getFoldersByName("system-backups");
+  return folders.hasNext() ? folders.next() : rootFolder.createFolder("system-backups");
+}
+
+function getMaintenanceTriggerIds_() {
+  return parseJson_(PropertiesService.getScriptProperties().getProperty(MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY), []);
+}
+
+function saveMaintenanceTriggerIds_(ids) {
+  PropertiesService.getScriptProperties().setProperty(
+    MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY,
+    JSON.stringify(ids || [])
+  );
+}
+
+function syncMaintenanceTrigger_(preferences) {
+  var triggerIds = getMaintenanceTriggerIds_();
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (triggerIds.indexOf(trigger.getUniqueId()) >= 0) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  saveMaintenanceTriggerIds_([]);
+  if (!preferences || (!preferences.autoBackupEnabled && !(preferences.retentionDays > 0))) return;
+  var trigger = ScriptApp.newTrigger("runScheduledMaintenance")
+    .timeBased()
+    .everyDays(1)
+    .atHour(preferences.backupHour || 3)
+    .create();
+  saveMaintenanceTriggerIds_([trigger.getUniqueId()]);
+}
+
+function renderTemplate_(template, data) {
+  var result = String(template || "");
+  Object.keys(data || {}).forEach(function (key) {
+    result = result.replace(new RegExp("{{" + key + "}}", "g"), String(data[key] || ""));
+  });
+  return result;
+}
+
+function writeBackupFile_() {
+  var backupFolder = getBackupFolder_();
+  var payload = {
+    exportedAt: new Date().toISOString(),
+    surveys: getSurveys_(),
+    responses: getResponses_({ includeTrashed: true }),
+    preferences: getPreferences_(),
+    customerMemos: getCustomerMemos_(),
+    adminUsers: getAdminUsers_().map(publicAdminUser_),
+  };
+  var fileName = "backup_" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss") + ".json";
+  backupFolder.createFile(fileName, JSON.stringify(payload, null, 2), MimeType.PLAIN_TEXT);
+}
+
+function purgeOldTrashResponses_() {
+  var preferences = getPreferences_();
+  var retentionDays = Number(preferences.retentionDays || 0);
+  if (!(retentionDays > 0)) return 0;
+  var threshold = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  var purged = 0;
+  getResponses_({ includeTrashed: true }).forEach(function (response) {
+    var referenceTime = response.managedAt || response.submittedAt;
+    if (response.status !== "trash") return;
+    if (new Date(referenceTime).getTime() > threshold) return;
+    if (purgeResponse_(response.id)) purged += 1;
+  });
+  return purged;
+}
+
+function runScheduledMaintenance() {
+  var preferences = getPreferences_();
+  if (preferences.autoBackupEnabled) {
+    writeBackupFile_();
+  }
+  var purged = purgeOldTrashResponses_();
+  appendAuditLog_("maintenance.run", {
+    purged: purged,
+    autoBackupEnabled: preferences.autoBackupEnabled,
+  });
+  return {
+    ok: true,
+    purged: purged,
+    autoBackupEnabled: preferences.autoBackupEnabled,
+  };
 }
 
 function normalizeDataPolicyText_(value) {
@@ -555,8 +907,46 @@ function normalizeDataPolicyText_(value) {
     .trim();
 }
 
+function normalizeCustomerMemoRecord_(value) {
+  if (!value) return {
+    latestMemo: "",
+    entries: [],
+  };
+  if (typeof value === "string") {
+    var latestMemo = normalizeText_(value);
+    return {
+      latestMemo: latestMemo,
+      entries: latestMemo ? [{ at: new Date().toISOString(), memo: latestMemo }] : [],
+    };
+  }
+  var latest = normalizeText_(value.latestMemo || value.memo);
+  var entries = Array.isArray(value.entries)
+    ? value.entries
+        .map(function (entry) {
+          return {
+            at: normalizeText_(entry && entry.at) || new Date().toISOString(),
+            memo: normalizeText_(entry && (entry.memo || entry.content)),
+          };
+        })
+        .filter(function (entry) { return entry.memo; })
+    : [];
+  if (!latest && entries.length) latest = entries[0].memo;
+  return {
+    latestMemo: latest,
+    entries: entries,
+  };
+}
+
 function getCustomerMemos_() {
-  return parseJson_(PropertiesService.getScriptProperties().getProperty(CUSTOMER_MEMOS_PROPERTY_KEY), {});
+  var stored = parseJson_(PropertiesService.getScriptProperties().getProperty(CUSTOMER_MEMOS_PROPERTY_KEY), {});
+  var normalized = {};
+  Object.keys(stored || {}).forEach(function (customerName) {
+    normalized[customerName] = normalizeCustomerMemoRecord_(stored[customerName]);
+  });
+  if (JSON.stringify(stored || {}) !== JSON.stringify(normalized)) {
+    PropertiesService.getScriptProperties().setProperty(CUSTOMER_MEMOS_PROPERTY_KEY, JSON.stringify(normalized));
+  }
+  return normalized;
 }
 
 function updateCustomerMemo_(customerName, memo) {
@@ -565,7 +955,18 @@ function updateCustomerMemo_(customerName, memo) {
   var memos = getCustomerMemos_();
   var normalizedMemo = normalizeText_(memo);
   if (normalizedMemo) {
-    memos[name] = normalizedMemo;
+    var current = normalizeCustomerMemoRecord_(memos[name]);
+    var entries = Array.isArray(current.entries) ? current.entries.slice() : [];
+    if (normalizedMemo !== current.latestMemo) {
+      entries.unshift({
+        at: new Date().toISOString(),
+        memo: normalizedMemo,
+      });
+    }
+    memos[name] = {
+      latestMemo: normalizedMemo,
+      entries: entries.slice(0, 100),
+    };
   } else {
     delete memos[name];
   }
@@ -892,6 +1293,7 @@ function savePhotoFiles_(files, responseId, questionId, customerName) {
     return {
       name: file.name || fileName,
       type: mimeType,
+      capturedAt: normalizeText_(file.capturedAt),
       fileId: fileId,
       folderName: folderName,
       folderUrl: folderUrl,
@@ -979,7 +1381,8 @@ function getResponses_(filter) {
   return rows
     .filter(function (response) {
       return (!filter.clientId || response.customerClientId === filter.clientId) &&
-        (!filter.customerName || response.customerName === String(filter.customerName));
+        (!filter.customerName || response.customerName === String(filter.customerName)) &&
+        (filter.includeTrashed ? true : response.status !== "trash");
     })
     .sort(function (a, b) {
       return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
@@ -1095,17 +1498,35 @@ function updateResponse_(responseId, status, adminMemo, answers) {
 }
 
 function deleteResponse_(responseId) {
+  return trashResponse_(responseId);
+}
+
+function trashResponse_(responseId) {
   ensureSpreadsheet_();
   var response = getResponseById_(responseId);
   if (!response) throw new Error("回答が見つかりません。");
-  deleteResponseFiles_(response);
-  deleteRowByResponseId_(getSpreadsheet_().getSheetByName(response.surveyTitle), responseId, 2);
-  deleteRowByResponseId_(getSpreadsheet_().getSheetByName(MASTER_SHEET_NAME), responseId, 2);
-  appendAuditLog_("response.delete", {
+  updateResponse_(responseId, "trash", response.adminMemo, response.answers);
+  appendAuditLog_("response.trash", {
     responseId: responseId,
     surveyId: response.surveyId,
     customerName: response.customerName,
   });
+  return getResponseById_(responseId);
+}
+
+function purgeResponse_(responseId) {
+  ensureSpreadsheet_();
+  var response = getResponseById_(responseId);
+  if (!response) return false;
+  deleteResponseFiles_(response);
+  deleteRowByResponseId_(getSpreadsheet_().getSheetByName(response.surveyTitle), responseId, 2);
+  deleteRowByResponseId_(getSpreadsheet_().getSheetByName(MASTER_SHEET_NAME), responseId, 2);
+  appendAuditLog_("response.purge", {
+    responseId: responseId,
+    surveyId: response.surveyId,
+    customerName: response.customerName,
+  });
+  return true;
 }
 
 function deleteResponseFiles_(response) {
@@ -1259,15 +1680,18 @@ function getAdminInfo_() {
   var spreadsheet = getSpreadsheet_();
   var rootFolder = getRootPhotoFolder_();
   var credentials = getAdminCredentials_();
+  var backupFolder = getBackupFolder_();
   return {
     backend: "gas",
     adminUsername: credentials.username,
+    adminUsers: getAdminUsers_().map(publicAdminUser_),
     ownerEmail: getOwnerEmail_(),
     spreadsheetId: spreadsheet.getId(),
     spreadsheetUrl: spreadsheet.getUrl(),
     masterSheetName: MASTER_SHEET_NAME,
     photoRootFolderName: ROOT_DRIVE_FOLDER_NAME,
     photoRootFolderUrl: rootFolder.getUrl(),
+    backupFolderUrl: backupFolder.getUrl(),
     version: VERSION,
   };
 }
@@ -1312,13 +1736,30 @@ function uniqueValues_(values) {
 function adminLogin_(loginId, password) {
   var normalizedLoginId = normalizeText_(loginId);
   ensureLoginAllowed_(normalizedLoginId);
-  var credentials = getAdminCredentials_();
-  if (normalizedLoginId !== credentials.username || String(password || "") !== credentials.password) {
+  var user = findAdminUserByUsername_(normalizedLoginId);
+  if (!user || String(password || "") !== user.password) {
     recordLoginFailure_(normalizedLoginId);
     appendErrorLog_("adminLogin", "ログイン失敗", {
       loginId: normalizedLoginId,
     });
     throw new Error("ログインIDまたはパスワードが違います。");
+  }
+  var preferences = getPreferences_();
+  if (preferences.twoFactorEnabled) {
+    var session = createOtpSession_(user);
+    try {
+      sendOtpEmail_(user, session);
+    } catch (error) {
+      appendErrorLog_("adminLoginOtp", error.message || "確認コード送信失敗", {
+        loginId: normalizedLoginId,
+      });
+      throw error;
+    }
+    return {
+      requiresOtp: true,
+      sessionId: session.id,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    };
   }
   clearLoginFailures_(normalizedLoginId);
   var expiresAt = Date.now() + 8 * 60 * 60 * 1000;
@@ -1326,35 +1767,24 @@ function adminLogin_(loginId, password) {
     loginId: normalizedLoginId,
   });
   return {
-    token: makeToken_(credentials.username, expiresAt),
+    token: makeToken_(user.username, expiresAt),
     expiresAt: new Date(expiresAt).toISOString(),
   };
 }
 
 function getAdminCredentials_() {
-  var properties = PropertiesService.getScriptProperties();
-  var username = normalizeText_(properties.getProperty("ADMIN_USERNAME"));
-  var password = String(properties.getProperty("ADMIN_PASSWORD") || "");
-
-  if (!username || username === LEGACY_ADMIN_USERNAME) {
-    username = DEFAULT_ADMIN_USERNAME;
-    properties.setProperty("ADMIN_USERNAME", username);
-  }
-
-  if (!password || password === LEGACY_ADMIN_PASSWORD) {
-    password = DEFAULT_ADMIN_PASSWORD;
-    properties.setProperty("ADMIN_PASSWORD", password);
-  }
-
+  var users = getAdminUsers_();
+  var primary = users[0];
   return {
-    username: username,
-    password: password,
+    username: primary.username,
+    password: primary.password,
   };
 }
 
 function updateAdminCredentials_(loginId, password) {
   var properties = PropertiesService.getScriptProperties();
-  var current = getAdminCredentials_();
+  var users = getAdminUsers_();
+  var current = users[0];
   var nextLoginId = normalizeText_(loginId);
   var nextPassword = String(password || "");
 
@@ -1364,6 +1794,11 @@ function updateAdminCredentials_(loginId, password) {
     throw new Error("パスワードは4文字以上で入力してください。");
   }
 
+  users[0] = Object.assign({}, current, {
+    username: nextLoginId,
+    password: nextPassword,
+  });
+  properties.setProperty(ADMIN_USERS_PROPERTY_KEY, JSON.stringify(users));
   properties.setProperty("ADMIN_USERNAME", nextLoginId);
   properties.setProperty("ADMIN_PASSWORD", nextPassword);
   clearLoginFailures_(current.username);
@@ -1429,7 +1864,7 @@ function normalizeEmail_(value) {
 }
 
 function normalizeStatus_(status) {
-  return ["new", "checked", "done"].indexOf(String(status)) >= 0 ? String(status) : "new";
+  return ["new", "checked", "done", "trash"].indexOf(String(status)) >= 0 ? String(status) : "new";
 }
 
 function normalizeSurveyStatus_(status) {
@@ -1470,14 +1905,14 @@ function isQuestionVisible_(question, rawAnswerMap) {
 function notifyNewResponse_(response) {
   var preferences = getPreferences_();
   if (!preferences.notificationEnabled || !preferences.notificationEmail) return;
-  var subject = "【まゆみ助産院】新しいアンケート回答";
-  var body = [
-    "新しいアンケート回答が届きました。",
-    "",
-    "お名前: " + normalizeText_(response && response.customerName),
-    "アンケート: " + normalizeText_(response && response.surveyTitle),
-    "送信日時: " + normalizeText_(response && response.submittedAt),
-  ].join("\n");
+  var templateData = {
+    customerName: normalizeText_(response && response.customerName),
+    surveyTitle: normalizeText_(response && response.surveyTitle),
+    submittedAt: normalizeText_(response && response.submittedAt),
+    responseId: normalizeText_(response && response.id),
+  };
+  var subject = renderTemplate_(preferences.notificationSubject, templateData);
+  var body = renderTemplate_(preferences.notificationBody, templateData);
 
   try {
     MailApp.sendEmail(preferences.notificationEmail, subject, body);
