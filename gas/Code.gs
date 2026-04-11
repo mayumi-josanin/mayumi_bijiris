@@ -7,6 +7,8 @@ var DEFAULT_ADMIN_PASSWORD = "3939";
 var LEGACY_ADMIN_USERNAME = "admin";
 var LEGACY_ADMIN_PASSWORD = "admin123";
 var DEFAULT_TOKEN_SECRET = "change-this-gas-secret";
+var SURVEYS_PROPERTY_KEY = "SURVEYS_JSON";
+var QUESTION_TYPES = ["text", "textarea", "rating", "choice", "checkbox", "photo"];
 
 var MASTER_HEADERS = [
   "送信日時",
@@ -164,6 +166,23 @@ function handlePost_(body) {
       ),
     };
   }
+  if (body.action === "adminCreateSurvey") {
+    requireAdmin_(body.token);
+    return {
+      survey: createSurvey_(body.payload || {}),
+    };
+  }
+  if (body.action === "adminUpdateSurvey") {
+    requireAdmin_(body.token);
+    return {
+      survey: updateSurveyDefinition_(body.surveyId, body.payload || {}),
+    };
+  }
+  if (body.action === "adminDeleteSurvey") {
+    requireAdmin_(body.token);
+    deleteSurveyDefinition_(body.surveyId);
+    return { ok: true };
+  }
   throw new Error("API が見つかりません。");
 }
 
@@ -184,20 +203,134 @@ function output_(data, callback) {
 }
 
 function getSurveys_() {
-  var timestamp = new Date().toISOString();
-  return SURVEYS.map(function (survey) {
-    return Object.assign({}, survey, {
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-  });
+  return loadSurveys_().map(cloneSurvey_);
 }
 
 function findSurvey_(surveyId) {
-  for (var i = 0; i < SURVEYS.length; i += 1) {
-    if (SURVEYS[i].id === surveyId) return SURVEYS[i];
+  var surveys = loadSurveys_();
+  for (var i = 0; i < surveys.length; i += 1) {
+    if (surveys[i].id === surveyId) return surveys[i];
   }
   throw new Error("アンケートが見つかりません。");
+}
+
+function loadSurveys_() {
+  var properties = PropertiesService.getScriptProperties();
+  var stored = parseJson_(properties.getProperty(SURVEYS_PROPERTY_KEY), null);
+  if (Array.isArray(stored)) {
+    var normalizedStored = stored.map(function (survey) {
+      return validateSurveyPayload_(survey, survey);
+    });
+    if (JSON.stringify(stored) !== JSON.stringify(normalizedStored)) {
+      saveSurveys_(normalizedStored);
+    }
+    return normalizedStored;
+  }
+
+  var defaults = SURVEYS.map(function (survey) {
+    return validateSurveyPayload_(survey, survey);
+  });
+  saveSurveys_(defaults);
+  return defaults;
+}
+
+function saveSurveys_(surveys) {
+  PropertiesService.getScriptProperties().setProperty(
+    SURVEYS_PROPERTY_KEY,
+    JSON.stringify(Array.isArray(surveys) ? surveys : [])
+  );
+}
+
+function cloneSurvey_(survey) {
+  return JSON.parse(JSON.stringify(survey));
+}
+
+function makeId_(prefix) {
+  return String(prefix) + "_" + Utilities.getUuid();
+}
+
+function isChoiceType_(type) {
+  return type === "choice" || type === "checkbox";
+}
+
+function validateSurveyPayload_(payload, existing) {
+  var title = normalizeText_(payload && payload.title);
+  var description = normalizeText_(payload && payload.description);
+  var status = payload && payload.status === "draft" ? "draft" : "published";
+  var questions = Array.isArray(payload && payload.questions) ? payload.questions : [];
+
+  if (!title) throw new Error("タイトルを入力してください。");
+  if (!description) throw new Error("説明文を入力してください。");
+  if (!questions.length) throw new Error("質問は1つ以上必要です。");
+
+  var normalizedQuestions = questions.map(function (question) {
+    var type = QUESTION_TYPES.indexOf(question && question.type) >= 0 ? question.type : "text";
+    var label = normalizeText_(question && question.label);
+    var options = Array.isArray(question && question.options)
+      ? question.options.map(normalizeText_).filter(Boolean)
+      : [];
+
+    if (!label) throw new Error("質問文を入力してください。");
+    if (isChoiceType_(type) && options.length < 2) {
+      throw new Error("選択式の質問は選択肢を2つ以上入力してください。");
+    }
+
+    return {
+      id: normalizeText_(question && question.id) || makeId_("question"),
+      label: label,
+      type: type,
+      required: question && question.required === false ? false : true,
+      options: isChoiceType_(type) ? options : [],
+    };
+  });
+
+  return {
+    id: existing && existing.id ? existing.id : normalizeText_(payload && payload.id) || makeId_("survey"),
+    title: title,
+    description: description,
+    status: status,
+    questions: normalizedQuestions,
+    createdAt: existing && existing.createdAt ? String(existing.createdAt) : new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function createSurvey_(payload) {
+  var surveys = loadSurveys_();
+  var survey = validateSurveyPayload_(payload);
+  surveys.unshift(survey);
+  saveSurveys_(surveys);
+  ensureSurveySheet_(survey);
+  return cloneSurvey_(survey);
+}
+
+function updateSurveyDefinition_(surveyId, payload) {
+  var surveys = loadSurveys_();
+  var existing = null;
+  for (var i = 0; i < surveys.length; i += 1) {
+    if (surveys[i].id === surveyId) {
+      existing = surveys[i];
+      break;
+    }
+  }
+  if (!existing) throw new Error("アンケートが見つかりません。");
+
+  var survey = validateSurveyPayload_(payload, existing);
+  surveys = surveys.map(function (item) {
+    return item.id === surveyId ? survey : item;
+  });
+  saveSurveys_(surveys);
+  ensureSurveySheet_(survey);
+  return cloneSurvey_(survey);
+}
+
+function deleteSurveyDefinition_(surveyId) {
+  var surveys = loadSurveys_();
+  var filtered = surveys.filter(function (survey) {
+    return survey.id !== surveyId;
+  });
+  if (filtered.length === surveys.length) throw new Error("アンケートが見つかりません。");
+  saveSurveys_(filtered);
 }
 
 function saveResponse_(body) {
@@ -581,7 +714,7 @@ function findRowIndexByColumn_(sheet, column, value) {
 function ensureSpreadsheet_() {
   var spreadsheet = getSpreadsheet_();
   ensureSheet_(spreadsheet, MASTER_SHEET_NAME, MASTER_HEADERS);
-  SURVEYS.forEach(ensureSurveySheet_);
+  getSurveys_().forEach(ensureSurveySheet_);
 }
 
 function ensureSurveySheet_(survey) {
