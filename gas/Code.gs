@@ -109,11 +109,21 @@ function handleGet_(e) {
 
   if (action === "health") return { ok: true, backend: "gas" };
   if (action === "surveys") return { surveys: getSurveys_() };
-  if (action === "history") return { responses: getResponses_({ clientId: params.clientId }) };
+  if (action === "history") {
+    return {
+      responses: getResponses_({
+        clientId: params.clientId,
+        customerName: params.name,
+      }),
+    };
+  }
   if (action === "adminLogin") return adminLogin_(params.loginId, params.password);
 
   requireAdmin_(params.token);
   if (action === "adminInfo") return getAdminInfo_();
+  if (action === "adminUpdateCredentials") {
+    return updateAdminCredentials_(params.loginId, params.password);
+  }
   if (action === "adminSurveys") return { surveys: getSurveys_() };
   if (action === "adminResponses") return { responses: getResponses_({}) };
   if (action === "adminUpdate") {
@@ -189,11 +199,7 @@ function saveResponse_(body) {
     var survey = findSurvey_(payload.surveyId);
     var customer = payload.customer || {};
     var customerName = normalizeText_(customer.name);
-    var customerEmail = normalizeEmail_(customer.email);
     if (!customerName) throw new Error("お名前を入力してください。");
-    if (!customerEmail || customerEmail.indexOf("@") === -1) {
-      throw new Error("メールアドレスを入力してください。");
-    }
 
     var response = {
       id: responseId,
@@ -201,7 +207,7 @@ function saveResponse_(body) {
       surveyTitle: survey.title,
       customerClientId: body.clientId || payload.clientId || "",
       customerName: customerName,
-      customerEmail: customerEmail,
+      customerEmail: "",
       answers: buildAnswers_(survey, payload.answers || [], responseId, customerName),
       status: "new",
       adminMemo: "",
@@ -318,7 +324,8 @@ function getResponses_(filter) {
   var rows = readMasterRows_();
   return rows
     .filter(function (response) {
-      return !filter.clientId || response.customerClientId === filter.clientId;
+      return (!filter.clientId || response.customerClientId === filter.clientId) &&
+        (!filter.customerName || response.customerName === String(filter.customerName));
     })
     .sort(function (a, b) {
       return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
@@ -492,8 +499,10 @@ function ensureSheet_(spreadsheet, name, headers) {
 function getAdminInfo_() {
   var spreadsheet = getSpreadsheet_();
   var rootFolder = getRootPhotoFolder_();
+  var credentials = getAdminCredentials_();
   return {
     backend: "gas",
+    adminUsername: credentials.username,
     ownerEmail: getOwnerEmail_(),
     spreadsheetId: spreadsheet.getId(),
     spreadsheetUrl: spreadsheet.getUrl(),
@@ -570,6 +579,27 @@ function getAdminCredentials_() {
   return {
     username: username,
     password: password,
+  };
+}
+
+function updateAdminCredentials_(loginId, password) {
+  var properties = PropertiesService.getScriptProperties();
+  var current = getAdminCredentials_();
+  var nextLoginId = normalizeText_(loginId);
+  var nextPassword = String(password || "");
+
+  if (!nextLoginId) throw new Error("ログインIDを入力してください。");
+  if (!nextPassword) nextPassword = current.password;
+  if (String(nextPassword).length < 4) {
+    throw new Error("パスワードは4文字以上で入力してください。");
+  }
+
+  properties.setProperty("ADMIN_USERNAME", nextLoginId);
+  properties.setProperty("ADMIN_PASSWORD", nextPassword);
+
+  return {
+    ok: true,
+    adminInfo: getAdminInfo_(),
   };
 }
 
