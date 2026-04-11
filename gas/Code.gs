@@ -1,9 +1,11 @@
 var SPREADSHEET_ID = "1oDNTqlvKv1rGOGXIpnzPlegpFDeQ0WHGRLuY3ZAnZYc";
 var DEFAULT_SPREADSHEET_TITLE = "まゆみ助産院 ビジリス アンケート回答";
 var MASTER_SHEET_NAME = "回答一覧";
-var PHOTO_FOLDER_NAME = "まゆみ助産院 ビジリス アンケート写真";
-var DEFAULT_ADMIN_USERNAME = "admin";
-var DEFAULT_ADMIN_PASSWORD = "admin123";
+var ROOT_DRIVE_FOLDER_NAME = "bijiris";
+var DEFAULT_ADMIN_USERNAME = "mayumi2026";
+var DEFAULT_ADMIN_PASSWORD = "3939";
+var LEGACY_ADMIN_USERNAME = "admin";
+var LEGACY_ADMIN_PASSWORD = "admin123";
 var DEFAULT_TOKEN_SECRET = "change-this-gas-secret";
 
 var MASTER_HEADERS = [
@@ -90,9 +92,13 @@ function doPost(e) {
 
 function setup() {
   ensureSpreadsheet_();
+  var credentials = getAdminCredentials_();
+  var rootFolder = getRootPhotoFolder_();
   return {
     ok: true,
     spreadsheetUrl: getSpreadsheet_().getUrl(),
+    rootFolderUrl: rootFolder.getUrl(),
+    loginId: credentials.username,
     message: "初期設定が完了しました。",
   };
 }
@@ -196,7 +202,7 @@ function saveResponse_(body) {
       customerClientId: body.clientId || payload.clientId || "",
       customerName: customerName,
       customerEmail: customerEmail,
-      answers: buildAnswers_(survey, payload.answers || [], responseId),
+      answers: buildAnswers_(survey, payload.answers || [], responseId, customerName),
       status: "new",
       adminMemo: "",
       submittedAt: new Date().toISOString(),
@@ -209,11 +215,11 @@ function saveResponse_(body) {
   }
 }
 
-function buildAnswers_(survey, rawAnswers, responseId) {
+function buildAnswers_(survey, rawAnswers, responseId, customerName) {
   return survey.questions.map(function (question) {
     var raw = findRawAnswer_(rawAnswers, question.id);
     if (question.type === "photo") {
-      var files = savePhotoFiles_(raw.files || [], responseId, question.id);
+      var files = savePhotoFiles_(raw.files || [], responseId, question.id, customerName);
       return {
         questionId: question.id,
         label: question.label,
@@ -241,9 +247,11 @@ function findRawAnswer_(answers, questionId) {
   return {};
 }
 
-function savePhotoFiles_(files, responseId, questionId) {
+function savePhotoFiles_(files, responseId, questionId, customerName) {
   if (!Array.isArray(files) || !files.length) return [];
-  var folder = getPhotoFolder_();
+  var folder = getCustomerPhotoFolder_(customerName);
+  var folderName = folder.getName();
+  var folderUrl = folder.getUrl();
   return files.slice(0, 6).map(function (file, index) {
     var dataUrl = String(file.dataUrl || "");
     var match = dataUrl.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
@@ -257,12 +265,17 @@ function savePhotoFiles_(files, responseId, questionId) {
     var blob = Utilities.newBlob(Utilities.base64Decode(match[2]), mimeType, fileName);
     var driveFile = folder.createFile(blob);
     driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var fileId = driveFile.getId();
     return {
       name: file.name || fileName,
       type: mimeType,
-      fileId: driveFile.getId(),
+      fileId: fileId,
+      folderName: folderName,
+      folderUrl: folderUrl,
       url: driveFile.getUrl(),
-      thumbnailUrl: "https://drive.google.com/thumbnail?id=" + driveFile.getId() + "&sz=w800",
+      previewUrl: "https://drive.google.com/uc?export=view&id=" + fileId,
+      downloadUrl: "https://drive.google.com/uc?export=download&id=" + fileId,
+      thumbnailUrl: "https://drive.google.com/thumbnail?id=" + fileId + "&sz=w1200",
     };
   });
 }
@@ -271,10 +284,33 @@ function sanitizeFileName_(value) {
   return String(value).replace(/[\\/:*?"<>|#%{}]/g, "_").slice(0, 180);
 }
 
-function getPhotoFolder_() {
-  var folders = DriveApp.getFoldersByName(PHOTO_FOLDER_NAME);
-  if (folders.hasNext()) return folders.next();
-  return DriveApp.createFolder(PHOTO_FOLDER_NAME);
+function sanitizeFolderName_(value) {
+  return normalizeText_(value).replace(/[\\/:*?"<>|#%{}]/g, "_").slice(0, 120);
+}
+
+function getRootPhotoFolder_() {
+  var properties = PropertiesService.getScriptProperties();
+  var folderId = normalizeText_(properties.getProperty("PHOTO_ROOT_FOLDER_ID"));
+  if (folderId) {
+    try {
+      return DriveApp.getFolderById(folderId);
+    } catch (error) {
+      // Recreate the folder if the saved id is no longer accessible.
+    }
+  }
+
+  var driveRoot = DriveApp.getRootFolder();
+  var folders = driveRoot.getFoldersByName(ROOT_DRIVE_FOLDER_NAME);
+  var folder = folders.hasNext() ? folders.next() : driveRoot.createFolder(ROOT_DRIVE_FOLDER_NAME);
+  properties.setProperty("PHOTO_ROOT_FOLDER_ID", folder.getId());
+  return folder;
+}
+
+function getCustomerPhotoFolder_(customerName) {
+  var rootFolder = getRootPhotoFolder_();
+  var folderName = sanitizeFolderName_(customerName) || "お名前未設定";
+  var folders = rootFolder.getFoldersByName(folderName);
+  return folders.hasNext() ? folders.next() : rootFolder.createFolder(folderName);
 }
 
 function getResponses_(filter) {
@@ -385,8 +421,22 @@ function deleteResponse_(responseId) {
   ensureSpreadsheet_();
   var response = getResponseById_(responseId);
   if (!response) throw new Error("回答が見つかりません。");
+  deleteResponseFiles_(response);
   deleteRowByResponseId_(getSpreadsheet_().getSheetByName(response.surveyTitle), responseId, 2);
   deleteRowByResponseId_(getSpreadsheet_().getSheetByName(MASTER_SHEET_NAME), responseId, 2);
+}
+
+function deleteResponseFiles_(response) {
+  var files = Array.isArray(response.files) ? response.files : [];
+  files.forEach(function (file) {
+    var fileId = normalizeText_(file.fileId);
+    if (!fileId) return;
+    try {
+      DriveApp.getFileById(fileId).setTrashed(true);
+    } catch (error) {
+      // Ignore already-deleted or inaccessible files.
+    }
+  });
 }
 
 function updateSurveySheetManagement_(sheetName, responseId, status, adminMemo) {
@@ -441,12 +491,15 @@ function ensureSheet_(spreadsheet, name, headers) {
 
 function getAdminInfo_() {
   var spreadsheet = getSpreadsheet_();
+  var rootFolder = getRootPhotoFolder_();
   return {
     backend: "gas",
+    ownerEmail: getOwnerEmail_(),
     spreadsheetId: spreadsheet.getId(),
     spreadsheetUrl: spreadsheet.getUrl(),
     masterSheetName: MASTER_SHEET_NAME,
-    photoFolderName: PHOTO_FOLDER_NAME,
+    photoRootFolderName: ROOT_DRIVE_FOLDER_NAME,
+    photoRootFolderUrl: rootFolder.getUrl(),
   };
 }
 
@@ -488,15 +541,35 @@ function uniqueValues_(values) {
 }
 
 function adminLogin_(loginId, password) {
-  var expectedUser = getConfig_("ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME);
-  var expectedPassword = getConfig_("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD);
-  if (normalizeText_(loginId) !== expectedUser || String(password || "") !== expectedPassword) {
+  var credentials = getAdminCredentials_();
+  if (normalizeText_(loginId) !== credentials.username || String(password || "") !== credentials.password) {
     throw new Error("ログインIDまたはパスワードが違います。");
   }
   var expiresAt = Date.now() + 8 * 60 * 60 * 1000;
   return {
-    token: makeToken_(expectedUser, expiresAt),
+    token: makeToken_(credentials.username, expiresAt),
     expiresAt: new Date(expiresAt).toISOString(),
+  };
+}
+
+function getAdminCredentials_() {
+  var properties = PropertiesService.getScriptProperties();
+  var username = normalizeText_(properties.getProperty("ADMIN_USERNAME"));
+  var password = String(properties.getProperty("ADMIN_PASSWORD") || "");
+
+  if (!username || username === LEGACY_ADMIN_USERNAME) {
+    username = DEFAULT_ADMIN_USERNAME;
+    properties.setProperty("ADMIN_USERNAME", username);
+  }
+
+  if (!password || password === LEGACY_ADMIN_PASSWORD) {
+    password = DEFAULT_ADMIN_PASSWORD;
+    properties.setProperty("ADMIN_PASSWORD", password);
+  }
+
+  return {
+    username: username,
+    password: password,
   };
 }
 
@@ -528,6 +601,14 @@ function sign_(value) {
   return Utilities.base64EncodeWebSafe(
     Utilities.computeHmacSha256Signature(String(value), getConfig_("TOKEN_SECRET", DEFAULT_TOKEN_SECRET))
   );
+}
+
+function getOwnerEmail_() {
+  try {
+    return Session.getEffectiveUser().getEmail();
+  } catch (error) {
+    return "";
+  }
 }
 
 function getConfig_(key, fallback) {
