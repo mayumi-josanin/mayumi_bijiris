@@ -52,6 +52,7 @@ var SURVEYS = [
       { id: "q_ticket_end_photo_first", label: "計測写真(1回目)", type: "photo", required: false, options: [] },
       { id: "q_ticket_end_photo_last", label: "計測写真(6回目or10回目)", type: "photo", required: false, options: [] },
       { id: "q_ticket_end_consultation", label: "ご質問・ご相談(自由記述)", type: "textarea", required: false, options: [] },
+      { id: "q_ticket_end_ticket_size", label: "回数券の枚数", type: "choice", required: true, options: ["6回券", "10回券"] },
     ],
   },
   {
