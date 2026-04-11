@@ -1,4 +1,5 @@
-var SPREADSHEET_ID = "1AP_ZMDtQHHIQgjE_Jq3m5RWAKmCU0fR2klKbL59MDc4";
+var SPREADSHEET_ID = "1oDNTqlvKv1rGOGXIpnzPlegpFDeQ0WHGRLuY3ZAnZYc";
+var DEFAULT_SPREADSHEET_TITLE = "まゆみ助産院 ビジリス アンケート回答";
 var MASTER_SHEET_NAME = "回答一覧";
 var PHOTO_FOLDER_NAME = "まゆみ助産院 ビジリス アンケート写真";
 var DEFAULT_ADMIN_USERNAME = "admin";
@@ -106,6 +107,7 @@ function handleGet_(e) {
   if (action === "adminLogin") return adminLogin_(params.loginId, params.password);
 
   requireAdmin_(params.token);
+  if (action === "adminInfo") return getAdminInfo_();
   if (action === "adminSurveys") return { surveys: getSurveys_() };
   if (action === "adminResponses") return { responses: getResponses_({}) };
   if (action === "adminUpdate") {
@@ -437,8 +439,52 @@ function ensureSheet_(spreadsheet, name, headers) {
   return sheet;
 }
 
+function getAdminInfo_() {
+  var spreadsheet = getSpreadsheet_();
+  return {
+    backend: "gas",
+    spreadsheetId: spreadsheet.getId(),
+    spreadsheetUrl: spreadsheet.getUrl(),
+    masterSheetName: MASTER_SHEET_NAME,
+    photoFolderName: PHOTO_FOLDER_NAME,
+  };
+}
+
 function getSpreadsheet_() {
-  return SpreadsheetApp.openById(getConfig_("SPREADSHEET_ID", SPREADSHEET_ID));
+  var properties = PropertiesService.getScriptProperties();
+  var candidateIds = uniqueValues_([
+    properties.getProperty("ACTIVE_SPREADSHEET_ID"),
+    properties.getProperty("SPREADSHEET_ID"),
+    SPREADSHEET_ID,
+  ]);
+
+  for (var i = 0; i < candidateIds.length; i += 1) {
+    try {
+      var spreadsheet = SpreadsheetApp.openById(candidateIds[i]);
+      rememberSpreadsheetId_(spreadsheet.getId());
+      return spreadsheet;
+    } catch (error) {
+      // Try the next configured spreadsheet id.
+    }
+  }
+
+  var created = SpreadsheetApp.create(DEFAULT_SPREADSHEET_TITLE);
+  rememberSpreadsheetId_(created.getId());
+  return created;
+}
+
+function rememberSpreadsheetId_(spreadsheetId) {
+  PropertiesService.getScriptProperties().setProperty("ACTIVE_SPREADSHEET_ID", String(spreadsheetId));
+}
+
+function uniqueValues_(values) {
+  var seen = {};
+  return values.filter(function (value) {
+    var normalized = normalizeText_(value);
+    if (!normalized || seen[normalized]) return false;
+    seen[normalized] = true;
+    return true;
+  });
 }
 
 function adminLogin_(loginId, password) {
