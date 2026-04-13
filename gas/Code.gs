@@ -17,7 +17,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-08";
+var VERSION = "20260413-09";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -152,8 +152,10 @@ var SURVEYS = [
       { id: "q_bijiris_session_concern", label: "普段のお身体のお悩みや、ビジリス（骨盤底筋ケア）について気になること・知りたいことはありますか？（複数選択可）", type: "checkbox", required: false, options: getBijirisSessionConcernOptions_() },
       { id: "q_bijiris_session_life_changes", label: "日常生活にどのような変化がありましたか？（複数選択可）", type: "checkbox", required: false, options: BIJIRIS_SESSION_LIFE_CHANGE_OPTIONS },
       { id: "q_bijiris_session_life_changes_other", label: "日常生活の変化（その他）", type: "textarea", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_life_changes", value: "その他（自由記述）" } },
-      { id: "q_bijiris_session_monitor_photos", label: "モニター時の写真2枚", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
-      { id: "q_bijiris_session_ticket_end_photos", label: "回数券終了時の写真2枚", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_monitor_photos_6", label: "モニター時の写真2枚", type: "photo", required: true, options: [], visibilityConditions: [{ questionId: "q_bijiris_session_type", value: "回数券" }, { questionId: "q_bijiris_session_ticket_plan", value: "6回券" }, { questionId: "q_bijiris_session_ticket_round", value: "6回目" }], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_ticket_end_photos_6", label: "回数券終了時の写真2枚", type: "photo", required: true, options: [], visibilityConditions: [{ questionId: "q_bijiris_session_type", value: "回数券" }, { questionId: "q_bijiris_session_ticket_plan", value: "6回券" }, { questionId: "q_bijiris_session_ticket_round", value: "6回目" }], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_monitor_photos_10", label: "モニター時の写真2枚", type: "photo", required: true, options: [], visibilityConditions: [{ questionId: "q_bijiris_session_type", value: "回数券" }, { questionId: "q_bijiris_session_ticket_plan", value: "10回券" }, { questionId: "q_bijiris_session_ticket_round", value: "10回目" }], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_ticket_end_photos_10", label: "回数券終了時の写真2枚", type: "photo", required: true, options: [], visibilityConditions: [{ questionId: "q_bijiris_session_type", value: "回数券" }, { questionId: "q_bijiris_session_ticket_plan", value: "10回券" }, { questionId: "q_bijiris_session_ticket_round", value: "10回目" }], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
     ],
   },
 ];
@@ -2023,16 +2025,26 @@ function getBijirisSessionPhotoConfig_(question, survey) {
     return { maxFiles: 4, requiredCount: 4 };
   }
   if (
-    question.id === "q_bijiris_session_monitor_photos" ||
-    question.id === "q_bijiris_session_ticket_end_photos"
+    [
+      "q_bijiris_session_monitor_photos_6",
+      "q_bijiris_session_monitor_photos_10",
+      "q_bijiris_session_ticket_end_photos_6",
+      "q_bijiris_session_ticket_end_photos_10",
+      "q_bijiris_session_monitor_photos",
+      "q_bijiris_session_ticket_end_photos"
+    ].indexOf(question.id) >= 0
   ) {
     return { maxFiles: 2, requiredCount: 2 };
   }
   return null;
 }
 
-function isBijirisSessionPhotoQuestion_(question, survey) {
-  return Boolean(getBijirisSessionPhotoConfig_(question, survey));
+function isLegacyBijirisSessionPhotoQuestion_(question, survey) {
+  return Boolean(
+    survey && survey.id === "survey_bijiris_session" &&
+      question &&
+      ["q_bijiris_session_monitor_photos", "q_bijiris_session_ticket_end_photos"].indexOf(question.id) >= 0
+  );
 }
 
 function isBijirisSessionFinalPhotoVisible_(rawAnswerMap) {
@@ -2066,7 +2078,7 @@ function getPhotoQuestionRequiredCount_(question, visible, survey) {
 }
 
 function isQuestionVisible_(question, rawAnswerMap, survey) {
-  if (isBijirisSessionPhotoQuestion_(question, survey)) {
+  if (isLegacyBijirisSessionPhotoQuestion_(question, survey)) {
     return isBijirisSessionFinalPhotoVisible_(rawAnswerMap || {});
   }
   var conditions = getQuestionVisibilityConditions_(question);
