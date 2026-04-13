@@ -17,7 +17,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-07";
+var VERSION = "20260413-08";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -2031,6 +2031,24 @@ function getBijirisSessionPhotoConfig_(question, survey) {
   return null;
 }
 
+function isBijirisSessionPhotoQuestion_(question, survey) {
+  return Boolean(getBijirisSessionPhotoConfig_(question, survey));
+}
+
+function isBijirisSessionFinalPhotoVisible_(rawAnswerMap) {
+  var sessionTypeValues = rawAnswerMap && rawAnswerMap.q_bijiris_session_type;
+  var ticketPlanValues = rawAnswerMap && rawAnswerMap.q_bijiris_session_ticket_plan;
+  var ticketRoundValues = rawAnswerMap && rawAnswerMap.q_bijiris_session_ticket_round;
+  var sessionType = Array.isArray(sessionTypeValues) && sessionTypeValues.length ? normalizeText_(sessionTypeValues[0]) : "";
+  var ticketPlan = Array.isArray(ticketPlanValues) && ticketPlanValues.length ? normalizeText_(ticketPlanValues[0]) : "";
+  var ticketRound = Array.isArray(ticketRoundValues) && ticketRoundValues.length ? normalizeText_(ticketRoundValues[0]) : "";
+  return (
+    sessionType === "回数券" &&
+    ((ticketPlan === "6回券" && ticketRound === "6回目") ||
+      (ticketPlan === "10回券" && ticketRound === "10回目"))
+  );
+}
+
 function getPhotoQuestionMaxFiles_(question, survey) {
   var bijirisSessionPhotoConfig = getBijirisSessionPhotoConfig_(question, survey);
   if (bijirisSessionPhotoConfig) return bijirisSessionPhotoConfig.maxFiles;
@@ -2048,6 +2066,9 @@ function getPhotoQuestionRequiredCount_(question, visible, survey) {
 }
 
 function isQuestionVisible_(question, rawAnswerMap, survey) {
+  if (isBijirisSessionPhotoQuestion_(question, survey)) {
+    return isBijirisSessionFinalPhotoVisible_(rawAnswerMap || {});
+  }
   var conditions = getQuestionVisibilityConditions_(question);
   if (conditions.length) {
     return conditions.every(function (condition) {
