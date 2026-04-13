@@ -297,6 +297,7 @@ function handleGet_(e) {
       responses: getResponses_({
         clientId: params.clientId,
         customerName: params.name,
+        matchByNameOnly: params.recoverByName === "1",
         includeTrashed: false,
       }),
     };
@@ -1578,7 +1579,9 @@ function getResponses_(filter) {
   var rows = readMasterRows_();
   return rows
     .filter(function (response) {
-      return (!filter.clientId || response.customerClientId === filter.clientId) &&
+      var matchByNameOnly = Boolean(filter && filter.matchByNameOnly);
+      var clientMatches = matchByNameOnly || !filter.clientId || response.customerClientId === filter.clientId;
+      return clientMatches &&
         (!filter.customerName || response.customerName === String(filter.customerName)) &&
         (filter.includeTrashed ? true : response.status !== "trash");
     })
