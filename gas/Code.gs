@@ -1,7 +1,8 @@
 var SPREADSHEET_ID = "1oDNTqlvKv1rGOGXIpnzPlegpFDeQ0WHGRLuY3ZAnZYc";
 var DEFAULT_SPREADSHEET_TITLE = "まゆみ助産院 ビジリス アンケート回答";
 var MASTER_SHEET_NAME = "回答一覧";
-var ROOT_DRIVE_FOLDER_NAME = "bijiris";
+var ROOT_DRIVE_FOLDER_NAME = "Bijiris";
+var LEGACY_ROOT_DRIVE_FOLDER_NAMES = ["bijiris"];
 var DEFAULT_ADMIN_USERNAME = "mayumi2026";
 var DEFAULT_ADMIN_PASSWORD = "3939";
 var LEGACY_ADMIN_USERNAME = "admin";
@@ -23,7 +24,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-12";
+var VERSION = "20260413-13";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -1796,7 +1797,9 @@ function buildAnswers_(survey, rawAnswers, responseId, customerName) {
             responseId,
             question.id,
             customerName,
-            getPhotoQuestionMaxFiles_(question, survey)
+            getPhotoQuestionMaxFiles_(question, survey),
+            survey,
+            rawAnswerMap
           )
         : [];
       if (visible && requiredPhotoCount && files.length < requiredPhotoCount) {
@@ -1940,7 +1943,9 @@ function buildUpdatedPublicResponse_(existing, survey, rawAnswers) {
             existing.id,
             question.id,
             existing.customerName,
-            getPhotoQuestionMaxFiles_(question, survey)
+            getPhotoQuestionMaxFiles_(question, survey),
+            survey,
+            rawAnswerMap
           )
         : [];
       if (visible && requiredPhotoCount && files.length < requiredPhotoCount) {
@@ -2017,11 +2022,83 @@ function makeResponseSignature_(surveyId, customerName, answers) {
   });
 }
 
-function savePhotoFiles_(files, responseId, questionId, customerName) {
+function getRawAnswerValue_(rawAnswerMap, questionId) {
+  var values = rawAnswerMap && rawAnswerMap[questionId];
+  return Array.isArray(values) && values.length ? normalizeText_(values[0]) : "";
+}
+
+function getQuestionPhotoBaseName_(question, survey) {
+  if (!question) return "写真";
+  var questionId = normalizeText_(question.id);
+  if (
+    [
+      "q_bijiris_session_monitor_photos_6",
+      "q_bijiris_session_monitor_photos_10",
+      "q_bijiris_session_monitor_photos",
+    ].indexOf(questionId) >= 0
+  ) {
+    return "モニター";
+  }
+  if (
+    [
+      "q_bijiris_session_ticket_end_photos_6",
+      "q_bijiris_session_ticket_end_photos_10",
+      "q_bijiris_session_ticket_end_photos",
+      "q_ticket_end_photo_last",
+    ].indexOf(questionId) >= 0
+  ) {
+    return "回数券終了";
+  }
+  var label = normalizeText_(question.label);
+  if (!label) return "写真";
+  label = label.replace(/写真\d*枚?/g, "");
+  label = label.replace(/\s+/g, " ");
+  return sanitizeFileName_(label || "写真");
+}
+
+function buildPhotoStorageContext_(survey, question, rawAnswerMap) {
+  var surveyTitle = sanitizeFolderName_(survey && survey.title || "アンケート");
+  var sessionType = getRawAnswerValue_(rawAnswerMap, "q_bijiris_session_type");
+  var ticketPlan = getRawAnswerValue_(rawAnswerMap, "q_bijiris_session_ticket_plan");
+  var ticketSheet = getRawAnswerValue_(rawAnswerMap, "q_bijiris_session_ticket_sheet");
+  var legacyTicketPlan = getRawAnswerValue_(rawAnswerMap, "q_ticket_end_ticket_size");
+  var legacyTicketSheet = getRawAnswerValue_(rawAnswerMap, "q_ticket_end_ticket_sheet");
+  var folderLabel = surveyTitle || "アンケート";
+
+  if (survey && survey.id === "survey_bijiris_session") {
+    if (sessionType === "回数券") {
+      folderLabel = sanitizeFolderName_("回数券" + ticketPlan + " " + ticketSheet) || folderLabel;
+    } else if (sessionType) {
+      folderLabel = sanitizeFolderName_(sessionType) || folderLabel;
+    }
+  } else if (survey && survey.id === "survey_bijiris_ticket_end") {
+    folderLabel = sanitizeFolderName_("回数券" + legacyTicketPlan + " " + legacyTicketSheet) || folderLabel;
+  }
+
+  return {
+    folderName: folderLabel || "アンケート",
+    fileBaseName: getQuestionPhotoBaseName_(question, survey),
+  };
+}
+
+function getChildFolderByName_(parentFolder, folderName) {
+  var normalizedFolderName = sanitizeFolderName_(folderName) || "未分類";
+  var folders = parentFolder.getFoldersByName(normalizedFolderName);
+  return folders.hasNext() ? folders.next() : parentFolder.createFolder(normalizedFolderName);
+}
+
+function savePhotoFiles_(files, responseId, questionId, customerName, survey, rawAnswerMap) {
   if (!Array.isArray(files) || !files.length) return [];
-  var folder = getCustomerPhotoFolder_(customerName);
+  var customerFolder = getCustomerPhotoFolder_(customerName);
+  var question = survey && Array.isArray(survey.questions)
+    ? survey.questions.filter(function (item) { return item && item.id === questionId; })[0]
+    : null;
+  var storageContext = buildPhotoStorageContext_(survey, question, rawAnswerMap);
+  var folder = getChildFolderByName_(customerFolder, storageContext.folderName);
   var folderName = folder.getName();
   var folderUrl = folder.getUrl();
+  var customerFolderName = customerFolder.getName();
+  var customerFolderUrl = customerFolder.getUrl();
   return files.slice(0, 6).map(function (file, index) {
     var dataUrl = String(file.dataUrl || "");
     var match = dataUrl.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
@@ -2029,18 +2106,19 @@ function savePhotoFiles_(files, responseId, questionId, customerName) {
 
     var mimeType = match[1].replace("image/jpg", "image/jpeg");
     var extension = mimeType.split("/")[1].replace("jpeg", "jpg");
-    var fileName = sanitizeFileName_(
-      responseId + "_" + questionId + "_" + (index + 1) + "_" + (file.name || "photo." + extension)
-    );
+    var fileBaseName = sanitizeFileName_(storageContext.fileBaseName || "写真");
+    var fileName = sanitizeFileName_(fileBaseName + String(index + 1).padStart(2, "0") + "." + extension);
     var blob = Utilities.newBlob(Utilities.base64Decode(match[2]), mimeType, fileName);
     var driveFile = folder.createFile(blob);
     driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     var fileId = driveFile.getId();
     return {
-      name: file.name || fileName,
+      name: fileName,
       type: mimeType,
       capturedAt: normalizeText_(file.capturedAt),
       fileId: fileId,
+      customerFolderName: customerFolderName,
+      customerFolderUrl: customerFolderUrl,
       folderName: folderName,
       folderUrl: folderUrl,
       url: driveFile.getUrl(),
@@ -2051,7 +2129,7 @@ function savePhotoFiles_(files, responseId, questionId, customerName) {
   });
 }
 
-function syncPhotoFiles_(existingFiles, nextFiles, responseId, questionId, customerName, maxFiles) {
+function syncPhotoFiles_(existingFiles, nextFiles, responseId, questionId, customerName, maxFiles, survey, rawAnswerMap) {
   var currentFiles = Array.isArray(existingFiles) ? existingFiles : [];
   var requestedFiles = Array.isArray(nextFiles) ? nextFiles : [];
   var existingById = {};
@@ -2090,7 +2168,7 @@ function syncPhotoFiles_(existingFiles, nextFiles, responseId, questionId, custo
     }
   });
 
-  return keptFiles.concat(savePhotoFiles_(newFiles, responseId, questionId, customerName));
+  return keptFiles.concat(savePhotoFiles_(newFiles, responseId, questionId, customerName, survey, rawAnswerMap));
 }
 
 function sanitizeFileName_(value) {
@@ -2106,7 +2184,15 @@ function getRootPhotoFolder_() {
   var folderId = normalizeText_(properties.getProperty("PHOTO_ROOT_FOLDER_ID"));
   if (folderId) {
     try {
-      return DriveApp.getFolderById(folderId);
+      var existingFolder = DriveApp.getFolderById(folderId);
+      if (existingFolder.getName() !== ROOT_DRIVE_FOLDER_NAME) {
+        try {
+          existingFolder.setName(ROOT_DRIVE_FOLDER_NAME);
+        } catch (error) {
+          // Ignore rename failures and keep using the accessible folder.
+        }
+      }
+      return existingFolder;
     } catch (error) {
       // Recreate the folder if the saved id is no longer accessible.
     }
@@ -2114,7 +2200,23 @@ function getRootPhotoFolder_() {
 
   var driveRoot = DriveApp.getRootFolder();
   var folders = driveRoot.getFoldersByName(ROOT_DRIVE_FOLDER_NAME);
-  var folder = folders.hasNext() ? folders.next() : driveRoot.createFolder(ROOT_DRIVE_FOLDER_NAME);
+  var folder = folders.hasNext() ? folders.next() : null;
+  if (!folder) {
+    for (var i = 0; i < LEGACY_ROOT_DRIVE_FOLDER_NAMES.length; i += 1) {
+      var legacyFolders = driveRoot.getFoldersByName(LEGACY_ROOT_DRIVE_FOLDER_NAMES[i]);
+      if (!legacyFolders.hasNext()) continue;
+      folder = legacyFolders.next();
+      try {
+        folder.setName(ROOT_DRIVE_FOLDER_NAME);
+      } catch (error) {
+        // Keep using the legacy folder name if rename is not allowed.
+      }
+      break;
+    }
+  }
+  if (!folder) {
+    folder = driveRoot.createFolder(ROOT_DRIVE_FOLDER_NAME);
+  }
   properties.setProperty("PHOTO_ROOT_FOLDER_ID", folder.getId());
   return folder;
 }
