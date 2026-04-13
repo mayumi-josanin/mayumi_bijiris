@@ -17,13 +17,59 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260411-16";
+var VERSION = "20260413-01";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
 var LOGIN_MAX_ATTEMPTS = 5;
 var MAX_LOG_ENTRIES = 200;
 var OTP_TTL_MS = 10 * 60 * 1000;
+
+var BIJIRIS_SESSION_CONCERN_CATEGORIES = [
+  {
+    id: "toilet",
+    label: "【トイレ・デリケートゾーンのお悩み】",
+    options: [
+      "咳、くしゃみ、大笑いした時に尿もれすることがある",
+      "ジャンプや運動、重いものを持った時に尿もれすることがある",
+      "急にトイレに行きたくなる、我慢できず間に合わないことがある",
+      "トイレが近い・夜中に何度もトイレで起きる",
+      "デリケートゾーンの違和感や乾燥が気になる",
+      "便秘しやすい・お腹が張りやすい",
+    ],
+  },
+  {
+    id: "posture",
+    label: "【姿勢・体型のお悩み】",
+    options: [
+      "姿勢が崩れやすい・猫背や反り腰が気になる",
+      "下腹ぽっこりが気になる",
+      "ヒップラインや骨盤まわりのゆるみが気になる",
+      "産後の体型変化が気になる",
+    ],
+  },
+  {
+    id: "pain",
+    label: "【痛み・めぐりのお悩み】",
+    options: [
+      "腰痛がある",
+      "股関節や骨盤まわりに痛み・違和感がある",
+      "冷えやむくみが気になる",
+      "疲れやすい・眠りが浅い",
+    ],
+  },
+  {
+    id: "care",
+    label: "【ビジリス（骨盤底筋ケア）について知りたいこと】",
+    options: [
+      "骨盤底筋ケアでどんな変化が期待できるか知りたい",
+      "自宅でできる骨盤底筋ケアを知りたい",
+      "妊活や産後ケアにどう役立つか知りたい",
+      "自分に合う通い方や頻度を知りたい",
+      "その他",
+    ],
+  },
+];
 
 var MASTER_HEADERS = [
   "送信日時",
@@ -40,23 +86,30 @@ var MASTER_HEADERS = [
   "管理更新日時",
 ];
 
+function getBijirisSessionConcernOptions_() {
+  var options = [];
+  BIJIRIS_SESSION_CONCERN_CATEGORIES.forEach(function (category) {
+    (category.options || []).forEach(function (option) {
+      options.push(option);
+    });
+  });
+  return options;
+}
+
 var SURVEYS = [
   {
     id: "survey_bijiris_session",
     title: "ビジリス施術アンケート",
-    description: "ビジリス施術後の体感やご相談内容をお聞かせください。",
-    introMessage: "本日の施術後の体感や、今後のサポートに必要な内容をご記入ください。",
+    description: "ビジリス施術後の体感やお悩みをお聞かせください。",
+    introMessage: "施術内容を選択後、本日の体感や気になることをご回答ください。",
     completionMessage: "ビジリス施術アンケートのご回答ありがとうございました。",
     status: "published",
     questions: [
-      { id: "q_bijiris_session_consultation", label: "ご質問・ご相談", type: "textarea", required: false, options: [] },
-      { id: "q_bijiris_session_feeling", label: "本日のビジリスの体感はいかがでしたか？", type: "textarea", required: true, options: [] },
-      { id: "q_bijiris_session_type", label: "施術内容", type: "choice", required: true, options: ["モニター", "回数券", "乗り放題キャンペーン", "単発", "トライアル", "1~3回"] },
-      { id: "q_bijiris_session_monitor_count", label: "モニターと答えた方へ", type: "choice", required: false, options: ["1回目", "2回目", "3回目", "4回目", "5回目", "6回目"], visibleWhen: { questionId: "q_bijiris_session_type", value: "モニター" } },
-      { id: "q_bijiris_session_ticket_count", label: "回数券と答えた方へ", type: "choice", required: false, options: ["1回目", "2回目", "3回目", "4回目", "5回目", "6回目", "7回目", "8回目", "9回目", "10回目"], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
-      { id: "q_bijiris_session_unlimited", label: "乗り放題キャンペーンと答えた方へ", type: "text", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "乗り放題キャンペーン" } },
-      { id: "q_bijiris_session_single", label: "単発と答えた方へ", type: "text", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "単発" } },
-      { id: "q_bijiris_session_trial", label: "トライアルと答えた方へ", type: "text", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "トライアル" } },
+      { id: "q_bijiris_session_type", label: "施術内容", type: "choice", required: true, options: ["初回お試し", "回数券", "単発", "トライアル"] },
+      { id: "q_bijiris_session_ticket_plan", label: "回数券の種類", type: "choice", required: true, options: ["6回券", "10回券"], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_feeling", label: "本日のビジリスの体感はいかがでしたか？　以前と比べて変化したことなどがあればご記載ください", type: "textarea", required: true, options: [] },
+      { id: "q_bijiris_session_ticket_photos", label: "写真4枚（モニター時の写真2枚・回数券終了時の写真2枚）", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_concern", label: "普段のお身体のお悩みや、ビジリス（骨盤底筋ケア）について気になること・知りたいことはありますか？（複数選択可）", type: "checkbox", required: false, options: getBijirisSessionConcernOptions_() },
     ],
   },
   {
@@ -127,6 +180,25 @@ function setup() {
     rootFolderUrl: rootFolder.getUrl(),
     loginId: credentials.username,
     message: "初期設定が完了しました。",
+  };
+}
+
+function resetSurveysToDefaults() {
+  var surveys = SURVEYS.map(function (survey, index) {
+    var normalized = validateSurveyPayload_(Object.assign({}, survey, { sortOrder: index }), null);
+    normalized.sortOrder = index;
+    return normalized;
+  });
+  saveSurveys_(normalizeSurveyOrder_(surveys));
+  surveys.forEach(ensureSurveySheet_);
+  appendAuditLog_("survey.reset_defaults", {
+    count: surveys.length,
+    version: VERSION,
+  });
+  return {
+    ok: true,
+    version: VERSION,
+    surveys: getSurveys_(),
   };
 }
 
@@ -1120,9 +1192,19 @@ function buildAnswers_(survey, rawAnswers, responseId, customerName) {
     var required = isQuestionRequired_(question, visible, survey);
     var raw = findRawAnswer_(rawAnswers, question.id);
     if (question.type === "photo") {
-      var files = visible ? syncPhotoFiles_([], raw.files || [], responseId, question.id, customerName) : [];
-      if (required && !files.length) {
-        throw new Error("未回答の質問があります。");
+      var requiredPhotoCount = getPhotoQuestionRequiredCount_(question, visible, survey);
+      var files = visible
+        ? syncPhotoFiles_(
+            [],
+            raw.files || [],
+            responseId,
+            question.id,
+            customerName,
+            getPhotoQuestionMaxFiles_(question, survey)
+          )
+        : [];
+      if (visible && requiredPhotoCount && files.length < requiredPhotoCount) {
+        throw new Error(requiredPhotoCount === 1 ? "未回答の質問があります。" : "写真を" + requiredPhotoCount + "枚添付してください。");
       }
       return {
         questionId: question.id,
@@ -1220,11 +1302,21 @@ function buildUpdatedPublicResponse_(existing, survey, rawAnswers) {
     var visible = isQuestionVisible_(question, rawAnswerMap, survey);
     var required = isQuestionRequired_(question, visible, survey);
     if (question.type === "photo") {
+      var requiredPhotoCount = getPhotoQuestionRequiredCount_(question, visible, survey);
       var existingAnswer = answerMap[question.id] || { files: [] };
       var files = visible
-        ? syncPhotoFiles_(existingAnswer.files || [], raw.files || [], existing.id, question.id, existing.customerName)
+        ? syncPhotoFiles_(
+            existingAnswer.files || [],
+            raw.files || [],
+            existing.id,
+            question.id,
+            existing.customerName,
+            getPhotoQuestionMaxFiles_(question, survey)
+          )
         : [];
-      if (visible && required && !files.length) throw new Error("未回答の質問があります。");
+      if (visible && requiredPhotoCount && files.length < requiredPhotoCount) {
+        throw new Error(requiredPhotoCount === 1 ? "未回答の質問があります。" : "写真を" + requiredPhotoCount + "枚添付してください。");
+      }
       return {
         questionId: question.id,
         label: question.label,
@@ -1330,13 +1422,14 @@ function savePhotoFiles_(files, responseId, questionId, customerName) {
   });
 }
 
-function syncPhotoFiles_(existingFiles, nextFiles, responseId, questionId, customerName) {
+function syncPhotoFiles_(existingFiles, nextFiles, responseId, questionId, customerName, maxFiles) {
   var currentFiles = Array.isArray(existingFiles) ? existingFiles : [];
   var requestedFiles = Array.isArray(nextFiles) ? nextFiles : [];
   var existingById = {};
   var keptIds = {};
   var keptFiles = [];
   var newFiles = [];
+  var normalizedMaxFiles = Math.max(1, Number(maxFiles || 6));
 
   currentFiles.forEach(function (file) {
     if (file && file.fileId) existingById[String(file.fileId)] = file;
@@ -1353,6 +1446,10 @@ function syncPhotoFiles_(existingFiles, nextFiles, responseId, questionId, custo
     keptIds[fileId] = true;
     keptFiles.push(existingById[fileId]);
   });
+
+  if (keptFiles.length + newFiles.length > normalizedMaxFiles) {
+    throw new Error("写真は" + normalizedMaxFiles + "枚まで添付できます。");
+  }
 
   currentFiles.forEach(function (file) {
     var fileId = normalizeText_(file && file.fileId);
@@ -1915,6 +2012,24 @@ function isLegacyTicketEndLastPhotoVisible_(rawAnswerMap) {
   );
 }
 
+function isBijirisSessionTicketPhotoQuestion_(question, survey) {
+  return survey && survey.id === "survey_bijiris_session" && question && question.id === "q_bijiris_session_ticket_photos";
+}
+
+function getPhotoQuestionMaxFiles_(question, survey) {
+  if (isBijirisSessionTicketPhotoQuestion_(question, survey)) return 4;
+  return 6;
+}
+
+function getPhotoQuestionRequiredCount_(question, visible, survey) {
+  if (!visible) return 0;
+  if (isBijirisSessionTicketPhotoQuestion_(question, survey)) return 4;
+  if (isLegacyTicketEndLastPhotoQuestion_(question, survey) && !getQuestionVisibilityConditions_(question).length) {
+    return 1;
+  }
+  return question && question.required === false ? 0 : 1;
+}
+
 function isQuestionVisible_(question, rawAnswerMap, survey) {
   var conditions = getQuestionVisibilityConditions_(question);
   if (conditions.length) {
@@ -1942,11 +2057,9 @@ function isQuestionVisible_(question, rawAnswerMap, survey) {
 }
 
 function isQuestionRequired_(question, visible, survey) {
-  if (!visible) return false;
-  if (isLegacyTicketEndLastPhotoQuestion_(question, survey) && !getQuestionVisibilityConditions_(question).length) {
-    return true;
-  }
-  return question && question.required === false ? false : true;
+  return getPhotoQuestionRequiredCount_(question, visible, survey) > 0 || (
+    visible && !(question && question.type === "photo") && !(question && question.required === false)
+  );
 }
 
 function notifyNewResponse_(response) {
