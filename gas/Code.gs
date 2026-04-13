@@ -16,13 +16,14 @@ var CUSTOMER_TICKET_INFO_QUESTION_IDS = {
 };
 var PREFERENCES_PROPERTY_KEY = "ADMIN_PREFERENCES_JSON";
 var CUSTOMER_MEMOS_PROPERTY_KEY = "CUSTOMER_MEMOS_JSON";
+var CUSTOMER_PROFILES_PROPERTY_KEY = "CUSTOMER_PROFILES_JSON";
 var AUDIT_LOGS_PROPERTY_KEY = "AUDIT_LOGS_JSON";
 var ERROR_LOGS_PROPERTY_KEY = "ERROR_LOGS_JSON";
 var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-10";
+var VERSION = "20260413-11";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -298,14 +299,13 @@ function handleGet_(e) {
     };
   }
   if (action === "history") {
-    return {
-      responses: getResponses_({
-        clientId: params.clientId,
-        customerName: params.name,
-        matchByNameOnly: params.recoverByName === "1",
-        includeTrashed: false,
-      }),
-    };
+    return getCustomerHistoryPayload_({
+      clientId: params.clientId,
+      customerName: params.name,
+      customerNameKana: params.nameKana,
+      matchByNameOnly: params.recoverByName === "1",
+      includeTrashed: false,
+    });
   }
   if (action === "adminLogin") return adminLogin_(params.loginId, params.password);
   if (action === "adminVerifyOtp") return verifyAdminOtp_(params.sessionId, params.code);
@@ -1163,6 +1163,353 @@ function updateCustomerMemo_(customerName, memo) {
   return memos;
 }
 
+function normalizeCustomerProfileRecord_(record, fallbackName) {
+  var name = normalizeText_(record && record.name || fallbackName);
+  if (!name) return null;
+  var aliases = uniqueValues_(
+    (Array.isArray(record && record.aliases) ? record.aliases : [])
+      .map(normalizeText_)
+      .filter(function (alias) {
+        return alias && alias !== name;
+      })
+  );
+  var clientIds = uniqueValues_(
+    (Array.isArray(record && record.clientIds) ? record.clientIds : [])
+      .map(normalizeText_)
+      .filter(Boolean)
+  );
+  return {
+    name: name,
+    nameKana: normalizeKana_(record && record.nameKana),
+    aliases: aliases,
+    clientIds: clientIds,
+    adminManaged: record && record.adminManaged === true,
+    updatedAt: normalizeText_(record && record.updatedAt) || new Date().toISOString(),
+  };
+}
+
+function getCustomerProfiles_() {
+  var stored = parseJson_(PropertiesService.getScriptProperties().getProperty(CUSTOMER_PROFILES_PROPERTY_KEY), {});
+  var normalized = {};
+  Object.keys(stored || {}).forEach(function (key) {
+    var profile = normalizeCustomerProfileRecord_(stored[key], key);
+    if (!profile) return;
+    normalized[profile.name] = profile;
+  });
+  if (JSON.stringify(stored || {}) !== JSON.stringify(normalized)) {
+    saveCustomerProfiles_(normalized);
+  }
+  return normalized;
+}
+
+function saveCustomerProfiles_(profiles) {
+  PropertiesService.getScriptProperties().setProperty(
+    CUSTOMER_PROFILES_PROPERTY_KEY,
+    JSON.stringify(profiles || {})
+  );
+}
+
+function publicCustomerProfile_(record) {
+  if (!record) return null;
+  return {
+    name: normalizeText_(record.name),
+    nameKana: normalizeKana_(record.nameKana),
+  };
+}
+
+function pickCustomerProfileMatch_(matches, customerNameKana) {
+  if (!matches || !matches.length) return null;
+  var normalizedKana = normalizeKana_(customerNameKana);
+  if (normalizedKana) {
+    for (var i = 0; i < matches.length; i += 1) {
+      if (normalizeKana_(matches[i].profile && matches[i].profile.nameKana) === normalizedKana) {
+        return matches[i];
+      }
+    }
+  }
+  return matches[0];
+}
+
+function findCustomerProfileByClientId_(profiles, clientId) {
+  var normalizedClientId = normalizeText_(clientId);
+  if (!normalizedClientId) return null;
+  var matches = [];
+  Object.keys(profiles || {}).forEach(function (key) {
+    var profile = normalizeCustomerProfileRecord_(profiles[key], key);
+    if (!profile) return;
+    if (profile.clientIds.indexOf(normalizedClientId) >= 0) {
+      matches.push({ key: key, profile: profile });
+    }
+  });
+  return matches.length ? matches[0] : null;
+}
+
+function findCustomerProfileByName_(profiles, customerName, customerNameKana) {
+  var normalizedName = normalizeText_(customerName);
+  if (!normalizedName) return null;
+  var exactMatches = [];
+  var aliasMatches = [];
+  Object.keys(profiles || {}).forEach(function (key) {
+    var profile = normalizeCustomerProfileRecord_(profiles[key], key);
+    if (!profile) return;
+    if (profile.name === normalizedName) {
+      exactMatches.push({ key: key, profile: profile });
+      return;
+    }
+    if (profile.aliases.indexOf(normalizedName) >= 0) {
+      aliasMatches.push({ key: key, profile: profile });
+    }
+  });
+  return pickCustomerProfileMatch_(exactMatches.length ? exactMatches : aliasMatches, customerNameKana);
+}
+
+function saveCustomerProfileRecord_(profiles, previousKey, record) {
+  var normalized = normalizeCustomerProfileRecord_(record, record && record.name);
+  if (!normalized) return null;
+  if (previousKey && previousKey !== normalized.name) {
+    delete profiles[previousKey];
+  }
+  var existing = normalizeCustomerProfileRecord_(profiles[normalized.name], normalized.name);
+  if (existing) {
+    normalized = normalizeCustomerProfileRecord_({
+      name: normalized.name,
+      nameKana: normalized.nameKana || existing.nameKana,
+      aliases: existing.aliases.concat(normalized.aliases).concat(
+        existing.name && existing.name !== normalized.name ? [existing.name] : []
+      ),
+      clientIds: existing.clientIds.concat(normalized.clientIds),
+      adminManaged: existing.adminManaged || normalized.adminManaged,
+      updatedAt: new Date().toISOString(),
+    }, normalized.name);
+  }
+  profiles[normalized.name] = normalized;
+  return normalized;
+}
+
+function resolveCustomerProfileForSubmission_(customer, clientId) {
+  var submittedName = normalizeText_(customer && customer.name);
+  var submittedNameKana = normalizeKana_(customer && customer.nameKana);
+  var normalizedClientId = normalizeText_(clientId);
+  if (!submittedName && !normalizedClientId) return null;
+
+  var profiles = getCustomerProfiles_();
+  var clientMatch = findCustomerProfileByClientId_(profiles, normalizedClientId);
+  var nameMatch = clientMatch ? null : findCustomerProfileByName_(profiles, submittedName, submittedNameKana);
+  var match = clientMatch || nameMatch;
+  var record = match
+    ? normalizeCustomerProfileRecord_(match.profile, match.profile && match.profile.name)
+    : normalizeCustomerProfileRecord_({
+        name: submittedName,
+        nameKana: submittedNameKana,
+        clientIds: normalizedClientId ? [normalizedClientId] : [],
+        aliases: [],
+        adminManaged: false,
+      }, submittedName);
+  if (!record) return null;
+
+  if (normalizedClientId && record.clientIds.indexOf(normalizedClientId) === -1) {
+    record.clientIds.push(normalizedClientId);
+  }
+  if (submittedNameKana && (!record.nameKana || !record.adminManaged)) {
+    record.nameKana = submittedNameKana;
+  }
+  if (submittedName && submittedName !== record.name) {
+    if (record.adminManaged || !clientMatch) {
+      if (record.aliases.indexOf(submittedName) === -1) {
+        record.aliases.push(submittedName);
+      }
+    } else {
+      if (record.name && record.aliases.indexOf(record.name) === -1) {
+        record.aliases.push(record.name);
+      }
+      record.aliases = record.aliases.filter(function (alias) {
+        return alias !== submittedName;
+      });
+      record.name = submittedName;
+    }
+  }
+  record.updatedAt = new Date().toISOString();
+
+  var saved = saveCustomerProfileRecord_(profiles, match && match.key, record);
+  saveCustomerProfiles_(profiles);
+  return saved;
+}
+
+function ensureCustomerProfileFromHistory_(canonicalName, customerNameKana, clientId, aliasName) {
+  var name = normalizeText_(canonicalName);
+  if (!name) return null;
+  var normalizedClientId = normalizeText_(clientId);
+  var normalizedAlias = normalizeText_(aliasName);
+  var profiles = getCustomerProfiles_();
+  var match = findCustomerProfileByClientId_(profiles, normalizedClientId) ||
+    findCustomerProfileByName_(profiles, name, customerNameKana);
+  var record = match
+    ? normalizeCustomerProfileRecord_(match.profile, match.profile && match.profile.name)
+    : normalizeCustomerProfileRecord_({
+        name: name,
+        nameKana: normalizeKana_(customerNameKana),
+        clientIds: normalizedClientId ? [normalizedClientId] : [],
+        aliases: [],
+        adminManaged: false,
+      }, name);
+  if (!record) return null;
+
+  if (normalizedClientId && record.clientIds.indexOf(normalizedClientId) === -1) {
+    record.clientIds.push(normalizedClientId);
+  }
+  if (!record.nameKana && customerNameKana) {
+    record.nameKana = normalizeKana_(customerNameKana);
+  }
+  if (normalizedAlias && normalizedAlias !== record.name && record.aliases.indexOf(normalizedAlias) === -1) {
+    record.aliases.push(normalizedAlias);
+  }
+  record.updatedAt = new Date().toISOString();
+
+  var saved = saveCustomerProfileRecord_(profiles, match && match.key, record);
+  saveCustomerProfiles_(profiles);
+  return saved;
+}
+
+function updateAdminCustomerProfileRecord_(currentName, nextName, responses) {
+  var fromName = normalizeText_(currentName);
+  var toName = normalizeText_(nextName);
+  if (!fromName || !toName) return null;
+
+  var profiles = getCustomerProfiles_();
+  var match = findCustomerProfileByName_(profiles, fromName, "");
+  var responseClientIds = uniqueValues_(
+    (Array.isArray(responses) ? responses : [])
+      .map(function (response) {
+        return normalizeText_(response && response.customerClientId);
+      })
+      .filter(Boolean)
+  );
+  var record = match
+    ? normalizeCustomerProfileRecord_(match.profile, match.profile && match.profile.name)
+    : normalizeCustomerProfileRecord_({
+        name: fromName,
+        clientIds: responseClientIds,
+        aliases: [],
+        adminManaged: true,
+      }, fromName);
+  if (!record) return null;
+
+  responseClientIds.forEach(function (clientId) {
+    if (record.clientIds.indexOf(clientId) === -1) {
+      record.clientIds.push(clientId);
+    }
+  });
+  if (record.name && record.name !== toName && record.aliases.indexOf(record.name) === -1) {
+    record.aliases.push(record.name);
+  }
+  if (fromName !== toName && record.aliases.indexOf(fromName) === -1) {
+    record.aliases.push(fromName);
+  }
+  record.aliases = record.aliases.filter(function (alias) {
+    return alias !== toName;
+  });
+  record.name = toName;
+  record.adminManaged = true;
+  record.updatedAt = new Date().toISOString();
+
+  var saved = saveCustomerProfileRecord_(profiles, match && match.key, record);
+  saveCustomerProfiles_(profiles);
+  return saved;
+}
+
+function deleteCustomerProfileRecord_(customerName) {
+  var name = normalizeText_(customerName);
+  if (!name) return false;
+  var profiles = getCustomerProfiles_();
+  var match = findCustomerProfileByName_(profiles, name, "");
+  if (!match) return false;
+  delete profiles[match.key];
+  Object.keys(profiles).forEach(function (key) {
+    var profile = normalizeCustomerProfileRecord_(profiles[key], key);
+    if (!profile) return;
+    if (profile.aliases.indexOf(name) === -1) return;
+    profile.aliases = profile.aliases.filter(function (alias) {
+      return alias !== name;
+    });
+    profiles[key] = profile;
+  });
+  saveCustomerProfiles_(profiles);
+  return true;
+}
+
+function getCustomerHistoryPayload_(filter) {
+  var normalizedFilter = {
+    clientId: normalizeText_(filter && filter.clientId),
+    customerName: normalizeText_(filter && filter.customerName),
+    customerNameKana: normalizeKana_(filter && filter.customerNameKana),
+    matchByNameOnly: Boolean(filter && filter.matchByNameOnly),
+    includeTrashed: Boolean(filter && filter.includeTrashed),
+  };
+  var profileMatch = normalizedFilter.matchByNameOnly
+    ? findCustomerProfileByName_(getCustomerProfiles_(), normalizedFilter.customerName, normalizedFilter.customerNameKana)
+    : findCustomerProfileByClientId_(getCustomerProfiles_(), normalizedFilter.clientId) ||
+      findCustomerProfileByName_(getCustomerProfiles_(), normalizedFilter.customerName, normalizedFilter.customerNameKana);
+  var responses = [];
+  var profile = null;
+
+  if (profileMatch) {
+    profile = ensureCustomerProfileFromHistory_(
+      profileMatch.profile && profileMatch.profile.name,
+      normalizedFilter.customerNameKana || profileMatch.profile && profileMatch.profile.nameKana,
+      normalizedFilter.clientId,
+      normalizedFilter.customerName
+    );
+    responses = getResponses_({
+      customerName: profile && profile.name,
+      includeTrashed: normalizedFilter.includeTrashed,
+    });
+    return {
+      responses: responses,
+      customerProfile: publicCustomerProfile_(profile),
+    };
+  }
+
+  responses = getResponses_({
+    clientId: normalizedFilter.matchByNameOnly ? "" : normalizedFilter.clientId,
+    customerName: normalizedFilter.customerName,
+    matchByNameOnly: normalizedFilter.matchByNameOnly,
+    includeTrashed: normalizedFilter.includeTrashed,
+  });
+
+  if (!responses.length && !normalizedFilter.matchByNameOnly && normalizedFilter.clientId) {
+    responses = getResponses_({
+      clientId: normalizedFilter.clientId,
+      includeTrashed: normalizedFilter.includeTrashed,
+    });
+    if (responses.length) {
+      profile = ensureCustomerProfileFromHistory_(
+        responses[0].customerName,
+        normalizedFilter.customerNameKana,
+        normalizedFilter.clientId,
+        normalizedFilter.customerName
+      );
+      responses = getResponses_({
+        customerName: profile && profile.name || responses[0].customerName,
+        includeTrashed: normalizedFilter.includeTrashed,
+      });
+    }
+  } else if (responses.length) {
+    profile = ensureCustomerProfileFromHistory_(
+      responses[0].customerName,
+      normalizedFilter.customerNameKana,
+      normalizedFilter.clientId,
+      normalizedFilter.customerName && normalizedFilter.customerName !== responses[0].customerName
+        ? normalizedFilter.customerName
+        : ""
+    );
+  }
+
+  return {
+    responses: responses,
+    customerProfile: publicCustomerProfile_(profile),
+  };
+}
+
 function getAnswerValueByQuestionIds_(answers, questionIds) {
   var list = Array.isArray(answers) ? answers : [];
   for (var i = 0; i < list.length; i += 1) {
@@ -1318,9 +1665,10 @@ function saveResponse_(body) {
     var survey = findSurvey_(payload.surveyId);
     assertSurveyCanAcceptResponses_(survey);
     var customer = payload.customer || {};
-    var customerName = normalizeText_(customer.name);
-    if (!customerName) throw new Error("お名前を入力してください。");
     var customerClientId = body.clientId || payload.clientId || "";
+    var customerProfile = resolveCustomerProfileForSubmission_(customer, customerClientId);
+    var customerName = normalizeText_(customerProfile && customerProfile.name || customer.name);
+    if (!customerName) throw new Error("お名前を入力してください。");
 
     var answers = buildAnswers_(survey, payload.answers || [], responseId, customerName);
     var duplicate = findDuplicateResponse_(survey, customerName, customerClientId, answers);
@@ -1459,7 +1807,15 @@ function updatePublicResponse_(body) {
 function canCustomerEditResponse_(response, clientId, customerName) {
   if (!response) return false;
   if (response.customerClientId && String(response.customerClientId) !== String(clientId || "")) return false;
-  if (normalizeText_(response.customerName) !== normalizeText_(customerName)) return false;
+  var normalizedResponseName = normalizeText_(response.customerName);
+  var normalizedCustomerName = normalizeText_(customerName);
+  if (normalizedResponseName !== normalizedCustomerName) {
+    var profileMatch = findCustomerProfileByClientId_(getCustomerProfiles_(), clientId) ||
+      findCustomerProfileByName_(getCustomerProfiles_(), customerName, "");
+    if (!profileMatch || normalizeText_(profileMatch.profile && profileMatch.profile.name) !== normalizedResponseName) {
+      return false;
+    }
+  }
   return Date.now() - new Date(response.submittedAt).getTime() <= RESPONSE_EDIT_WINDOW_MS;
 }
 
@@ -1871,6 +2227,7 @@ function updateCustomerProfile_(customerName, payload) {
       renameCustomerMemo_(currentName, nextName);
       renameCustomerPhotoFolder_(currentName, nextName);
     }
+    updateAdminCustomerProfileRecord_(currentName, nextName, responses);
 
     appendAuditLog_("customer.profile.update", {
       customerName: currentName,
@@ -1901,6 +2258,7 @@ function deleteCustomerProfile_(customerName) {
       purgeResponse_(response.id);
     });
     deleteCustomerMemo_(name);
+    deleteCustomerProfileRecord_(name);
     trashCustomerPhotoFolder_(name);
 
     appendAuditLog_("customer.profile.delete", {
@@ -2253,6 +2611,10 @@ function getConfig_(key, fallback) {
 
 function normalizeText_(value) {
   return String(value || "").trim();
+}
+
+function normalizeKana_(value) {
+  return String(value || "").replace(/\s+/g, "").trim();
 }
 
 function normalizeEmail_(value) {
