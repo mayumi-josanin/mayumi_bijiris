@@ -17,7 +17,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-03";
+var VERSION = "20260413-06";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -71,6 +71,45 @@ var BIJIRIS_SESSION_CONCERN_CATEGORIES = [
   },
 ];
 
+var BIJIRIS_SESSION_TICKET_SHEET_OPTIONS = [
+  "1枚目",
+  "2枚目",
+  "3枚目",
+  "4枚目",
+  "5枚目",
+  "6枚目",
+  "7枚目",
+  "8枚目",
+  "9枚目",
+  "10枚目",
+];
+
+var BIJIRIS_SESSION_TICKET_ROUND_OPTIONS = [
+  "1回目",
+  "2回目",
+  "3回目",
+  "4回目",
+  "5回目",
+  "6回目",
+  "7回目",
+  "8回目",
+  "9回目",
+  "10回目",
+];
+
+var BIJIRIS_SESSION_LIFE_CHANGE_OPTIONS = [
+  "咳やくしゃみをした時の不安が以前より減った",
+  "急な尿意を気にする場面が減った",
+  "外出時にトイレの場所を気にしすぎなくなった",
+  "夜中にトイレで起きる回数が減った",
+  "お腹の奥に力が入りやすくなった",
+  "骨盤まわりが安定した感じがある",
+  "姿勢を意識しやすくなった",
+  "下腹まわりがすっきりした感じがある",
+  "歩く・立つ・動くことが以前より楽になった",
+  "その他（自由記述）",
+];
+
 var MASTER_HEADERS = [
   "送信日時",
   "回答ID",
@@ -107,9 +146,14 @@ var SURVEYS = [
     questions: [
       { id: "q_bijiris_session_type", label: "施術内容", type: "choice", required: true, options: ["初回お試し", "回数券", "単発", "トライアル"] },
       { id: "q_bijiris_session_ticket_plan", label: "回数券の種類", type: "choice", required: true, options: ["6回券", "10回券"], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_ticket_sheet", label: "回数券の何枚目ですか？", type: "choice", required: true, options: BIJIRIS_SESSION_TICKET_SHEET_OPTIONS, visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_ticket_round", label: "回数券の何回目ですか？", type: "choice", required: true, options: BIJIRIS_SESSION_TICKET_ROUND_OPTIONS, visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
       { id: "q_bijiris_session_feeling", label: "本日のビジリスの体感はいかがでしたか？　以前と比べて変化したことなどがあればご記載ください", type: "textarea", required: true, options: [] },
-      { id: "q_bijiris_session_ticket_photos", label: "写真4枚（モニター時の写真2枚・回数券終了時の写真2枚）", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
       { id: "q_bijiris_session_concern", label: "普段のお身体のお悩みや、ビジリス（骨盤底筋ケア）について気になること・知りたいことはありますか？（複数選択可）", type: "checkbox", required: false, options: getBijirisSessionConcernOptions_() },
+      { id: "q_bijiris_session_life_changes", label: "日常生活にどのような変化がありましたか？（複数選択可）", type: "checkbox", required: false, options: BIJIRIS_SESSION_LIFE_CHANGE_OPTIONS },
+      { id: "q_bijiris_session_life_changes_other", label: "日常生活の変化（その他）", type: "textarea", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_life_changes", value: "その他（自由記述）" } },
+      { id: "q_bijiris_session_monitor_photos", label: "モニター時の写真2枚", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
+      { id: "q_bijiris_session_ticket_end_photos", label: "回数券終了時の写真2枚", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
     ],
   },
 ];
@@ -1973,18 +2017,30 @@ function isLegacyTicketEndLastPhotoVisible_(rawAnswerMap) {
   );
 }
 
-function isBijirisSessionTicketPhotoQuestion_(question, survey) {
-  return survey && survey.id === "survey_bijiris_session" && question && question.id === "q_bijiris_session_ticket_photos";
+function getBijirisSessionPhotoConfig_(question, survey) {
+  if (!(survey && survey.id === "survey_bijiris_session" && question)) return null;
+  if (question.id === "q_bijiris_session_ticket_photos") {
+    return { maxFiles: 4, requiredCount: 4 };
+  }
+  if (
+    question.id === "q_bijiris_session_monitor_photos" ||
+    question.id === "q_bijiris_session_ticket_end_photos"
+  ) {
+    return { maxFiles: 2, requiredCount: 2 };
+  }
+  return null;
 }
 
 function getPhotoQuestionMaxFiles_(question, survey) {
-  if (isBijirisSessionTicketPhotoQuestion_(question, survey)) return 4;
+  var bijirisSessionPhotoConfig = getBijirisSessionPhotoConfig_(question, survey);
+  if (bijirisSessionPhotoConfig) return bijirisSessionPhotoConfig.maxFiles;
   return 6;
 }
 
 function getPhotoQuestionRequiredCount_(question, visible, survey) {
   if (!visible) return 0;
-  if (isBijirisSessionTicketPhotoQuestion_(question, survey)) return 4;
+  var bijirisSessionPhotoConfig = getBijirisSessionPhotoConfig_(question, survey);
+  if (bijirisSessionPhotoConfig) return bijirisSessionPhotoConfig.requiredCount;
   if (isLegacyTicketEndLastPhotoQuestion_(question, survey) && !getQuestionVisibilityConditions_(question).length) {
     return 1;
   }
