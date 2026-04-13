@@ -9,6 +9,11 @@ var LEGACY_ADMIN_PASSWORD = "admin123";
 var DEFAULT_TOKEN_SECRET = "change-this-gas-secret";
 var SURVEYS_PROPERTY_KEY = "SURVEYS_JSON";
 var QUESTION_TYPES = ["text", "textarea", "rating", "choice", "checkbox", "photo"];
+var CUSTOMER_TICKET_INFO_QUESTION_IDS = {
+  plan: ["q_bijiris_session_ticket_plan", "q_ticket_end_ticket_size"],
+  sheet: ["q_bijiris_session_ticket_sheet", "q_ticket_end_ticket_sheet"],
+  round: ["q_bijiris_session_ticket_round", "q_ticket_end_ticket_round"],
+};
 var PREFERENCES_PROPERTY_KEY = "ADMIN_PREFERENCES_JSON";
 var CUSTOMER_MEMOS_PROPERTY_KEY = "CUSTOMER_MEMOS_JSON";
 var AUDIT_LOGS_PROPERTY_KEY = "AUDIT_LOGS_JSON";
@@ -394,6 +399,14 @@ function handlePost_(body) {
     return {
       memos: updateCustomerMemo_(body.customerName, body.memo),
     };
+  }
+  if (body.action === "adminUpdateCustomer") {
+    requireAdmin_(body.token);
+    return updateCustomerProfile_(body.customerName, body.payload || {});
+  }
+  if (body.action === "adminDeleteCustomer") {
+    requireAdmin_(body.token);
+    return deleteCustomerProfile_(body.customerName);
   }
   if (body.action === "adminUpdateUsers") {
     requireAdmin_(body.token);
@@ -1150,6 +1163,89 @@ function updateCustomerMemo_(customerName, memo) {
   return memos;
 }
 
+function getAnswerValueByQuestionIds_(answers, questionIds) {
+  var list = Array.isArray(answers) ? answers : [];
+  for (var i = 0; i < list.length; i += 1) {
+    if (questionIds.indexOf(String(list[i].questionId || "")) >= 0) {
+      var value = normalizeText_(list[i].value);
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
+function hasResponseTicketInfo_(response) {
+  return Boolean(
+    getAnswerValueByQuestionIds_(response && response.answers, CUSTOMER_TICKET_INFO_QUESTION_IDS.plan) ||
+    getAnswerValueByQuestionIds_(response && response.answers, CUSTOMER_TICKET_INFO_QUESTION_IDS.sheet) ||
+    getAnswerValueByQuestionIds_(response && response.answers, CUSTOMER_TICKET_INFO_QUESTION_IDS.round)
+  );
+}
+
+function updateAnswerValueByQuestionIds_(answers, questionIds, value) {
+  return (Array.isArray(answers) ? answers : []).map(function (answer) {
+    if (questionIds.indexOf(String(answer && answer.questionId || "")) === -1) return answer;
+    return Object.assign({}, answer, {
+      value: normalizeText_(value),
+    });
+  });
+}
+
+function saveCustomerMemos_(memos) {
+  PropertiesService.getScriptProperties().setProperty(CUSTOMER_MEMOS_PROPERTY_KEY, JSON.stringify(memos || {}));
+}
+
+function renameCustomerMemo_(currentName, nextName) {
+  var fromName = normalizeText_(currentName);
+  var toName = normalizeText_(nextName);
+  if (!fromName || !toName || fromName === toName) return getCustomerMemos_();
+  var memos = getCustomerMemos_();
+  if (!memos[fromName]) return memos;
+  var source = normalizeCustomerMemoRecord_(memos[fromName]);
+  var target = normalizeCustomerMemoRecord_(memos[toName]);
+  delete memos[fromName];
+  memos[toName] = {
+    latestMemo: source.latestMemo || target.latestMemo,
+    entries: source.entries.concat(target.entries).slice(0, 100),
+  };
+  saveCustomerMemos_(memos);
+  return memos;
+}
+
+function deleteCustomerMemo_(customerName) {
+  var name = normalizeText_(customerName);
+  if (!name) return getCustomerMemos_();
+  var memos = getCustomerMemos_();
+  delete memos[name];
+  saveCustomerMemos_(memos);
+  return memos;
+}
+
+function renameCustomerPhotoFolder_(currentName, nextName) {
+  var fromName = sanitizeFolderName_(currentName) || "お名前未設定";
+  var toName = sanitizeFolderName_(nextName) || "お名前未設定";
+  if (!fromName || !toName || fromName === toName) return;
+  var rootFolder = getRootPhotoFolder_();
+  var sourceFolders = rootFolder.getFoldersByName(fromName);
+  if (!sourceFolders.hasNext()) return;
+  var targetFolders = rootFolder.getFoldersByName(toName);
+  if (targetFolders.hasNext()) return;
+  sourceFolders.next().setName(toName);
+}
+
+function trashCustomerPhotoFolder_(customerName) {
+  var folderName = sanitizeFolderName_(customerName) || "お名前未設定";
+  var rootFolder = getRootPhotoFolder_();
+  var folders = rootFolder.getFoldersByName(folderName);
+  while (folders.hasNext()) {
+    try {
+      folders.next().setTrashed(true);
+    } catch (error) {
+      // Ignore inaccessible folders.
+    }
+  }
+}
+
 function getLogs_() {
   return {
     auditLogs: getStoredLogs_(AUDIT_LOGS_PROPERTY_KEY),
@@ -1644,6 +1740,25 @@ function appendMasterRow_(response) {
   ]);
 }
 
+function writeMasterResponseRow_(rowIndex, response) {
+  var sheet = getSpreadsheet_().getSheetByName(MASTER_SHEET_NAME);
+  if (!sheet || !rowIndex) return;
+  sheet.getRange(rowIndex, 1, 1, MASTER_HEADERS.length).setValues([[
+    response.submittedAt,
+    response.id,
+    response.surveyId,
+    response.surveyTitle,
+    response.customerClientId,
+    response.customerName,
+    response.customerEmail,
+    response.status,
+    response.adminMemo,
+    JSON.stringify(response.answers || []),
+    JSON.stringify(collectFilesFromAnswers_(response.answers || [])),
+    response.managedAt || "",
+  ]]);
+}
+
 function appendSurveyRow_(survey, response) {
   var sheet = ensureSurveySheet_(survey);
   var answerMap = {};
@@ -1667,7 +1782,6 @@ function appendSurveyRow_(survey, response) {
 
 function updateResponse_(responseId, status, adminMemo, answers) {
   ensureSpreadsheet_();
-  var sheet = getSpreadsheet_().getSheetByName(MASTER_SHEET_NAME);
   var rowIndex = findMasterRowIndex_(responseId);
   if (!rowIndex) throw new Error("回答が見つかりません。");
   var existing = getResponseById_(responseId);
@@ -1676,13 +1790,13 @@ function updateResponse_(responseId, status, adminMemo, answers) {
   var normalizedStatus = normalizeStatus_(status);
   var memo = normalizeText_(adminMemo);
   var normalizedAnswers = normalizeAdminAnswers_(survey, existing.answers, answers);
-  var files = collectFilesFromAnswers_(normalizedAnswers);
   var managedAt = new Date().toISOString();
-  sheet.getRange(rowIndex, 8).setValue(normalizedStatus);
-  sheet.getRange(rowIndex, 9).setValue(memo);
-  sheet.getRange(rowIndex, 10).setValue(JSON.stringify(normalizedAnswers));
-  sheet.getRange(rowIndex, 11).setValue(JSON.stringify(files));
-  sheet.getRange(rowIndex, 12).setValue(managedAt);
+  writeMasterResponseRow_(rowIndex, Object.assign({}, existing, {
+    status: normalizedStatus,
+    adminMemo: memo,
+    answers: normalizedAnswers,
+    managedAt: managedAt,
+  }));
 
   updateSurveySheetResponse_(survey, Object.assign({}, existing, {
     status: normalizedStatus,
@@ -1700,6 +1814,103 @@ function updateResponse_(responseId, status, adminMemo, answers) {
 
 function deleteResponse_(responseId) {
   return trashResponse_(responseId);
+}
+
+function updateCustomerProfile_(customerName, payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var currentName = normalizeText_(customerName);
+    var nextName = normalizeText_(payload && payload.name);
+    var ticketPlan = normalizeText_(payload && payload.ticketPlan);
+    var ticketSheet = normalizeText_(payload && payload.ticketSheet);
+    var ticketRound = normalizeText_(payload && payload.ticketRound);
+    if (!currentName) throw new Error("顧客名が必要です。");
+    if (!nextName) throw new Error("お名前を入力してください。");
+
+    var shouldUpdateTicket = Boolean(ticketPlan || ticketSheet || ticketRound);
+    if (shouldUpdateTicket && !(ticketPlan && ticketSheet && ticketRound)) {
+      throw new Error("回数券情報は種類・何枚目・何回目をすべて入力してください。");
+    }
+
+    var responses = getResponses_({ includeTrashed: true }).filter(function (response) {
+      return normalizeText_(response.customerName) === currentName;
+    });
+    if (!responses.length) throw new Error("顧客が見つかりません。");
+
+    var latestTicketResponse = responses
+      .filter(function (response) {
+        return response.status !== "trash" && hasResponseTicketInfo_(response);
+      })
+      .sort(function (a, b) {
+        return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
+      })[0];
+
+    if (shouldUpdateTicket && !latestTicketResponse) {
+      throw new Error("回数券スタンプ情報を更新できる回答がありません。");
+    }
+
+    responses.forEach(function (response) {
+      var nextAnswers = Array.isArray(response.answers) ? response.answers.slice() : [];
+      if (shouldUpdateTicket && latestTicketResponse && response.id === latestTicketResponse.id) {
+        nextAnswers = updateAnswerValueByQuestionIds_(nextAnswers, CUSTOMER_TICKET_INFO_QUESTION_IDS.plan, ticketPlan);
+        nextAnswers = updateAnswerValueByQuestionIds_(nextAnswers, CUSTOMER_TICKET_INFO_QUESTION_IDS.sheet, ticketSheet);
+        nextAnswers = updateAnswerValueByQuestionIds_(nextAnswers, CUSTOMER_TICKET_INFO_QUESTION_IDS.round, ticketRound);
+      }
+      var updated = Object.assign({}, response, {
+        customerName: nextName,
+        answers: nextAnswers,
+        managedAt: new Date().toISOString(),
+      });
+      writeMasterResponseRow_(findMasterRowIndex_(response.id), updated);
+      updateSurveySheetResponse_(findSurvey_(response.surveyId), updated);
+    });
+
+    if (currentName !== nextName) {
+      renameCustomerMemo_(currentName, nextName);
+      renameCustomerPhotoFolder_(currentName, nextName);
+    }
+
+    appendAuditLog_("customer.profile.update", {
+      customerName: currentName,
+      nextCustomerName: nextName,
+      updatedResponses: responses.length,
+      ticketUpdated: shouldUpdateTicket,
+    });
+    return { ok: true, customerName: nextName };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function deleteCustomerProfile_(customerName) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var name = normalizeText_(customerName);
+    if (!name) throw new Error("顧客名が必要です。");
+    var responses = getResponses_({ includeTrashed: true }).filter(function (response) {
+      return normalizeText_(response.customerName) === name;
+    });
+    var hadMemo = Boolean(getCustomerMemos_()[name]);
+    if (!responses.length && !hadMemo) throw new Error("顧客が見つかりません。");
+
+    responses.forEach(function (response) {
+      purgeResponse_(response.id);
+    });
+    deleteCustomerMemo_(name);
+    trashCustomerPhotoFolder_(name);
+
+    appendAuditLog_("customer.profile.delete", {
+      customerName: name,
+      deletedResponses: responses.length,
+    });
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function trashResponse_(responseId) {
