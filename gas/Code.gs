@@ -17,7 +17,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-01";
+var VERSION = "20260413-03";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -110,45 +110,6 @@ var SURVEYS = [
       { id: "q_bijiris_session_feeling", label: "本日のビジリスの体感はいかがでしたか？　以前と比べて変化したことなどがあればご記載ください", type: "textarea", required: true, options: [] },
       { id: "q_bijiris_session_ticket_photos", label: "写真4枚（モニター時の写真2枚・回数券終了時の写真2枚）", type: "photo", required: true, options: [], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
       { id: "q_bijiris_session_concern", label: "普段のお身体のお悩みや、ビジリス（骨盤底筋ケア）について気になること・知りたいことはありますか？（複数選択可）", type: "checkbox", required: false, options: getBijirisSessionConcernOptions_() },
-    ],
-  },
-  {
-    id: "survey_bijiris_ticket_end",
-    title: "ビジリス回数券終了アンケート",
-    description: "回数券終了時点での体感や日常生活の変化をお聞かせください。",
-    introMessage: "回数券終了時点での変化やご要望を確認し、今後のご案内に活用します。",
-    completionMessage: "ビジリス回数券終了アンケートのご回答ありがとうございました。",
-    status: "published",
-    questions: [
-      { id: "q_ticket_end_feeling", label: "本日のビジリスの体感はいかがでしたか？", type: "textarea", required: true, options: [] },
-      { id: "q_ticket_end_life_changes", label: "日常生活で変化を感じたことはありますか？（複数回答可）", type: "checkbox", required: false, options: ["立っている時や座っている時の姿勢が楽になった", "長時間歩いても疲れにくくなった", "ズボンやスカートが緩くなった気がする", "腰痛・股関節痛が軽くなった", "冷え性が良くなった（体がポカポカする）", "睡眠の質が良くなった", "階段の上り下りが楽になった", "便通が良くなった", "その他"] },
-      { id: "q_ticket_end_improve", label: "今後もっと改善したい部分はありますか？", type: "checkbox", required: false, options: ["もっとお腹周りを引き締めたい", "痛みのない生活を送りたい", "姿勢をもっと良くしたい", "今の良い状態をキープしたい", "トイレトラブルを改善したい", "睡眠の質を高めたい", "妊娠しやすい体づくりをしたい", "その他"] },
-      { id: "q_ticket_end_photo_first", label: "計測写真(1回目)", type: "photo", required: false, options: [] },
-      { id: "q_ticket_end_photo_last", label: "計測写真(今回)", type: "photo", required: false, options: [] },
-      { id: "q_ticket_end_consultation", label: "ご質問・ご相談(自由記述)", type: "textarea", required: false, options: [] },
-      { id: "q_ticket_end_ticket_size", label: "回数券の種類", type: "choice", required: true, options: ["6回券", "10回券"] },
-      { id: "q_ticket_end_ticket_sheet", label: "回数券の何枚目ですか？", type: "choice", required: true, options: ["1枚目", "2枚目", "3枚目", "4枚目", "5枚目", "6枚目", "7枚目", "8枚目", "9枚目", "10枚目"] },
-      { id: "q_ticket_end_ticket_round", label: "回数券の何回目ですか？", type: "choice", required: true, options: ["1回目", "2回目", "3回目", "4回目", "5回目", "6回目", "7回目", "8回目", "9回目", "10回目"] },
-    ],
-  },
-  {
-    id: "survey_bijiris_monitor_end",
-    title: "モニター終了アンケート",
-    description: "モニター終了時点での体感、変化、今後のご希望をお聞かせください。",
-    introMessage: "モニター終了時点での変化や今後のご希望を確認し、次のご提案に活用します。",
-    completionMessage: "モニター終了アンケートのご回答ありがとうございました。",
-    status: "published",
-    questions: [
-      { id: "q_monitor_end_usage", label: "ビジリスの刺激や使用感はいかがでしたか？", type: "checkbox", required: true, options: ["痛気持ちよくて効いている感じがした", "最初は驚いたが慣れた", "リラックスして座っていられた", "その他"] },
-      { id: "q_monitor_end_life_changes", label: "ビジリスを6回体験して、日常生活で変化を感じたことはありますか？（複数回答可）", type: "checkbox", required: false, options: ["立っている時や座っている時の姿勢が楽になった", "長時間歩いても疲れにくくなった", "尿漏れや頻尿が気にならなくなった", "ズボンやスカートが緩くなった気がする", "冷え性が改善された（体がポカポカする）", "腰痛・股関節痛が軽くなった", "便通が良くなった", "睡眠の質が良くなった", "階段の上り下りが楽になった", "その他"] },
-      { id: "q_monitor_end_improve", label: "今後もっと改善したい部分はありますか？", type: "checkbox", required: false, options: ["もっとお腹周りを引き締めたい", "完全に痛みのない生活を送りたい", "姿勢をもっと良くしたい", "今の良い状態をキープしたい", "睡眠の質を高めたい", "トイレトラブルを改善したい", "妊娠しやすい体づくりをしたい", "骨盤底筋をもっと鍛えたい", "その他"] },
-      { id: "q_monitor_end_sns_permission", label: "今回の測定結果や感想を、個人が特定できない形でSNSや院内掲示に掲載させていただいてもよろしいでしょうか？", type: "choice", required: true, options: ["写真・数値・感想すべてOK", "数値・感想のみOK", "感想のみOK", "掲載不可"] },
-      { id: "q_monitor_end_photo_first", label: "計測写真(1回目)", type: "photo", required: false, options: [] },
-      { id: "q_monitor_end_advice_sheet", label: "(任意)あなたの身体の変化を「見える化」！「ビフォーアフター写真＆個別アドバイスシート」をプレゼント", type: "choice", required: false, options: ["希望する", "希望しない"] },
-      { id: "q_monitor_end_next", label: "今後はどうしていきたいですか？", type: "choice", required: true, options: ["6回の効果を無駄にしないために継続していきたい", "継続は考えていない", "迷っている", "その他"] },
-      { id: "q_monitor_end_plan", label: "継続していきたい方へ\n＊今後の継続プラン(回数券)について、ご希望のコースをお選びください", type: "choice", required: false, options: ["SNS掲載御礼！特別感謝コース（初回30%OFF）", "SNS掲載御礼！特別感謝コース（30%OFF）", "モニター様優待コース（10%OFF）", "その他"], visibleWhen: { questionId: "q_monitor_end_next", value: "6回の効果を無駄にしないために継続していきたい" } },
-      { id: "q_monitor_end_consultation", label: "ご質問・ご相談(自由記述)", type: "textarea", required: false, options: [] },
-      { id: "q_monitor_end_photo_last", label: "計測写真(6回目)", type: "photo", required: false, options: [] },
     ],
   },
 ];
