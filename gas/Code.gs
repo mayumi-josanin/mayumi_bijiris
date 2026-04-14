@@ -24,7 +24,10 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260414-09";
+var NEXT_MEMBER_NUMBER_PROPERTY_KEY = "NEXT_MEMBER_NUMBER";
+var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
+var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
+var VERSION = "20260414-10";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -1073,10 +1076,19 @@ function writeBackupFile_() {
     responses: getResponses_({ includeTrashed: true }),
     preferences: getPreferences_(),
     customerMemos: getCustomerMemos_(),
+    customerProfiles: getAdminCustomerProfiles_(),
     adminUsers: getAdminUsers_().map(publicAdminUser_),
   };
   var fileName = "backup_" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss") + ".json";
-  backupFolder.createFile(fileName, JSON.stringify(payload, null, 2), MimeType.PLAIN_TEXT);
+  var file = backupFolder.createFile(fileName, JSON.stringify(payload, null, 2), MimeType.PLAIN_TEXT);
+  var meta = {
+    at: new Date().toISOString(),
+    fileId: file.getId(),
+    fileName: file.getName(),
+    fileUrl: file.getUrl(),
+  };
+  saveBackupMeta_(meta);
+  return meta;
 }
 
 function purgeOldTrashResponses_() {
@@ -1096,18 +1108,29 @@ function purgeOldTrashResponses_() {
 
 function runScheduledMaintenance() {
   var preferences = getPreferences_();
+  var backupInfo = null;
   if (preferences.autoBackupEnabled) {
-    writeBackupFile_();
+    backupInfo = writeBackupFile_();
   }
   var purged = purgeOldTrashResponses_();
+  var maintenanceMeta = {
+    at: new Date().toISOString(),
+    purged: purged,
+    autoBackupEnabled: preferences.autoBackupEnabled,
+    backupInfo: backupInfo,
+  };
+  saveLastMaintenanceMeta_(maintenanceMeta);
   appendAuditLog_("maintenance.run", {
     purged: purged,
     autoBackupEnabled: preferences.autoBackupEnabled,
+    backupInfo: backupInfo,
   });
   return {
     ok: true,
     purged: purged,
     autoBackupEnabled: preferences.autoBackupEnabled,
+    backupInfo: backupInfo,
+    ranAt: maintenanceMeta.at,
   };
 }
 
@@ -1205,6 +1228,7 @@ function normalizeCustomerProfileRecord_(record, fallbackName) {
   );
   return {
     name: name,
+    memberNumber: normalizeMemberNumber_(record && record.memberNumber),
     nameKana: normalizeKana_(record && record.nameKana),
     aliases: aliases,
     clientIds: clientIds,
@@ -1222,10 +1246,12 @@ function getCustomerProfiles_() {
     if (!profile) return;
     normalized[profile.name] = profile;
   });
-  if (JSON.stringify(stored || {}) !== JSON.stringify(normalized)) {
-    saveCustomerProfiles_(normalized);
+  var withMemberNumbers = JSON.parse(JSON.stringify(normalized));
+  var memberNumbersChanged = ensureCustomerProfileMemberNumbers_(withMemberNumbers);
+  if (JSON.stringify(stored || {}) !== JSON.stringify(withMemberNumbers) || memberNumbersChanged) {
+    saveCustomerProfiles_(withMemberNumbers);
   }
-  return normalized;
+  return withMemberNumbers;
 }
 
 function saveCustomerProfiles_(profiles) {
@@ -1239,8 +1265,10 @@ function publicCustomerProfile_(record) {
   if (!record) return null;
   return {
     name: normalizeText_(record.name),
+    memberNumber: normalizeMemberNumber_(record.memberNumber),
     nameKana: normalizeKana_(record.nameKana),
     activeTicketCard: publicActiveTicketCard_(record.activeTicketCard),
+    updatedAt: normalizeText_(record.updatedAt),
   };
 }
 
@@ -1302,6 +1330,7 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
   if (existing) {
     normalized = normalizeCustomerProfileRecord_({
       name: normalized.name,
+      memberNumber: normalized.memberNumber || existing.memberNumber,
       nameKana: normalized.nameKana || existing.nameKana,
       aliases: existing.aliases.concat(normalized.aliases).concat(
         existing.name && existing.name !== normalized.name ? [existing.name] : []
@@ -1318,6 +1347,24 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
   } else if (existing && existing.activeTicketCard) {
     normalized.activeTicketCard = normalizeActiveTicketCard_(existing.activeTicketCard);
   }
+  if (!normalized.memberNumber) {
+    var nextIndex = Math.max(getStoredNextMemberNumberIndex_(), getHighestMemberNumberIndex_(profiles) + 1, 1);
+    normalized.memberNumber = formatMemberNumber_(nextIndex);
+    saveNextMemberNumberIndex_(nextIndex + 1);
+  } else {
+    var memberNumberIndex = parseMemberNumberIndex_(normalized.memberNumber);
+    if (memberNumberIndex > 0) {
+      saveNextMemberNumberIndex_(Math.max(getStoredNextMemberNumberIndex_(), memberNumberIndex + 1));
+    }
+  }
+  Object.keys(profiles || {}).forEach(function (key) {
+    if (key === normalized.name) return;
+    var profile = normalizeCustomerProfileRecord_(profiles[key], key);
+    if (!profile) return;
+    if (profile.memberNumber && profile.memberNumber === normalized.memberNumber) {
+      throw new Error("会員番号が重複しています。");
+    }
+  });
   profiles[normalized.name] = normalized;
   return normalized;
 }
@@ -1406,11 +1453,12 @@ function ensureCustomerProfileFromHistory_(canonicalName, customerNameKana, clie
   return saved;
 }
 
-function updateAdminCustomerProfileRecord_(currentName, nextName, responses, activeTicketCard) {
+function updateAdminCustomerProfileRecord_(currentName, nextName, responses, options) {
   var fromName = normalizeText_(currentName);
   var toName = normalizeText_(nextName);
   if (!fromName || !toName) return null;
-  var shouldReplaceActiveTicketCard = arguments.length >= 4;
+  var normalizedOptions = options && typeof options === "object" ? options : {};
+  var shouldReplaceActiveTicketCard = Object.prototype.hasOwnProperty.call(normalizedOptions, "activeTicketCard");
 
   var profiles = getCustomerProfiles_();
   var match = findCustomerProfileByName_(profiles, fromName, "");
@@ -1448,8 +1496,14 @@ function updateAdminCustomerProfileRecord_(currentName, nextName, responses, act
   record.name = toName;
   record.adminManaged = true;
   record.updatedAt = new Date().toISOString();
+  if (normalizeMemberNumber_(normalizedOptions.memberNumber)) {
+    record.memberNumber = normalizeMemberNumber_(normalizedOptions.memberNumber);
+  }
+  if (normalizeKana_(normalizedOptions.nameKana)) {
+    record.nameKana = normalizeKana_(normalizedOptions.nameKana);
+  }
   if (shouldReplaceActiveTicketCard) {
-    record.activeTicketCard = normalizeActiveTicketCard_(activeTicketCard);
+    record.activeTicketCard = normalizeActiveTicketCard_(normalizedOptions.activeTicketCard);
   }
 
   var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
@@ -1467,6 +1521,9 @@ function getAdminCustomerProfiles_() {
     })
     .filter(Boolean)
     .sort(function (a, b) {
+      var leftIndex = parseMemberNumberIndex_(a && a.memberNumber);
+      var rightIndex = parseMemberNumberIndex_(b && b.memberNumber);
+      if (leftIndex !== rightIndex) return leftIndex - rightIndex;
       return normalizeText_(a && a.name).localeCompare(normalizeText_(b && b.name));
     });
 }
@@ -1596,6 +1653,13 @@ function getCustomerHistoryPayload_(filter) {
       normalizedFilter.customerName && normalizedFilter.customerName !== responses[0].customerName
         ? normalizedFilter.customerName
         : ""
+    );
+  } else if (normalizedFilter.customerName) {
+    profile = ensureCustomerProfileFromHistory_(
+      normalizedFilter.customerName,
+      normalizedFilter.customerNameKana,
+      normalizedFilter.clientId,
+      ""
     );
   }
 
@@ -2248,9 +2312,22 @@ function getCustomerPhotoFolder_(customerName) {
   return folders.hasNext() ? folders.next() : rootFolder.createFolder(folderName);
 }
 
+function decorateResponseWithCustomerProfile_(response, profiles) {
+  var profileMatch = findCustomerProfileByClientId_(profiles || {}, response && response.customerClientId) ||
+    findCustomerProfileByName_(profiles || {}, response && response.customerName, "");
+  var profile = profileMatch && profileMatch.profile
+    ? normalizeCustomerProfileRecord_(profileMatch.profile, profileMatch.key)
+    : null;
+  return Object.assign({}, response, {
+    customerMemberNumber: normalizeMemberNumber_(profile && profile.memberNumber),
+    customerNameKana: normalizeKana_(profile && profile.nameKana),
+  });
+}
+
 function getResponses_(filter) {
   ensureSpreadsheet_();
   var rows = readMasterRows_();
+  var profiles = getCustomerProfiles_();
   return rows
     .filter(function (response) {
       var matchByNameOnly = Boolean(filter && filter.matchByNameOnly);
@@ -2259,6 +2336,9 @@ function getResponses_(filter) {
         (!filter.customerName || response.customerName === String(filter.customerName)) &&
         (filter.includeTrashed ? true : response.status !== "trash");
     })
+    .map(function (response) {
+      return decorateResponseWithCustomerProfile_(response, profiles);
+    })
     .sort(function (a, b) {
       return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
     });
@@ -2266,8 +2346,9 @@ function getResponses_(filter) {
 
 function getResponseById_(responseId) {
   var rows = readMasterRows_();
+  var profiles = getCustomerProfiles_();
   for (var i = 0; i < rows.length; i += 1) {
-    if (rows[i].id === responseId) return rows[i];
+    if (rows[i].id === responseId) return decorateResponseWithCustomerProfile_(rows[i], profiles);
   }
   return null;
 }
@@ -2406,6 +2487,7 @@ function updateCustomerProfile_(customerName, payload) {
     ensureSpreadsheet_();
     var currentName = normalizeText_(customerName);
     var nextName = normalizeText_(payload && payload.name);
+    var memberNumber = normalizeMemberNumber_(payload && payload.memberNumber);
     var ticketPlan = normalizeText_(payload && payload.ticketPlan);
     var ticketSheet = normalizeText_(payload && payload.ticketSheet);
     var ticketRound = normalizeText_(payload && payload.ticketRound);
@@ -2417,10 +2499,11 @@ function updateCustomerProfile_(customerName, payload) {
       throw new Error("回数券情報は種類・何枚目・何回目をすべて入力してください。");
     }
 
+    var profileMatch = findCustomerProfileByName_(getCustomerProfiles_(), currentName, "");
     var responses = getResponses_({ includeTrashed: true }).filter(function (response) {
       return normalizeText_(response.customerName) === currentName;
     });
-    if (!responses.length) throw new Error("顧客が見つかりません。");
+    if (!responses.length && !profileMatch) throw new Error("顧客が見つかりません。");
 
     var latestTicketResponse = responses
       .filter(function (response) {
@@ -2429,10 +2512,6 @@ function updateCustomerProfile_(customerName, payload) {
       .sort(function (a, b) {
         return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
       })[0];
-
-    if (shouldUpdateTicket && !latestTicketResponse) {
-      throw new Error("回数券スタンプ情報を更新できる回答がありません。");
-    }
 
     responses.forEach(function (response) {
       var nextAnswers = Array.isArray(response.answers) ? response.answers.slice() : [];
@@ -2454,21 +2533,27 @@ function updateCustomerProfile_(customerName, payload) {
       renameCustomerMemo_(currentName, nextName);
       renameCustomerPhotoFolder_(currentName, nextName);
     }
+    var profileUpdateOptions = {};
+    if (memberNumber) {
+      profileUpdateOptions.memberNumber = memberNumber;
+    }
     if (shouldUpdateTicket) {
-      updateAdminCustomerProfileRecord_(currentName, nextName, responses, {
+      profileUpdateOptions.activeTicketCard = {
         plan: ticketPlan,
         sheetLabel: ticketSheet,
         roundLabel: ticketRound,
-      });
-    } else {
-      updateAdminCustomerProfileRecord_(currentName, nextName, responses);
+      };
+    } else if (profileMatch && profileMatch.profile && profileMatch.profile.activeTicketCard) {
+      profileUpdateOptions.activeTicketCard = normalizeActiveTicketCard_(profileMatch.profile.activeTicketCard);
     }
+    updateAdminCustomerProfileRecord_(currentName, nextName, responses, profileUpdateOptions);
 
     appendAuditLog_("customer.profile.update", {
       customerName: currentName,
       nextCustomerName: nextName,
       updatedResponses: responses.length,
       ticketUpdated: shouldUpdateTicket,
+      memberNumber: memberNumber,
     });
     return { ok: true, customerName: nextName };
   } finally {
@@ -2483,11 +2568,12 @@ function deleteCustomerProfile_(customerName) {
     ensureSpreadsheet_();
     var name = normalizeText_(customerName);
     if (!name) throw new Error("顧客名が必要です。");
+    var hasProfile = Boolean(findCustomerProfileByName_(getCustomerProfiles_(), name, ""));
     var responses = getResponses_({ includeTrashed: true }).filter(function (response) {
       return normalizeText_(response.customerName) === name;
     });
     var hadMemo = Boolean(getCustomerMemos_()[name]);
-    if (!responses.length && !hadMemo) throw new Error("顧客が見つかりません。");
+    if (!responses.length && !hadMemo && !hasProfile) throw new Error("顧客が見つかりません。");
 
     responses.forEach(function (response) {
       purgeResponse_(response.id);
@@ -2699,6 +2785,8 @@ function getAdminInfo_() {
     photoRootFolderUrl: rootFolder.getUrl(),
     backupFolderUrl: backupFolder.getUrl(),
     customerProfiles: getAdminCustomerProfiles_(),
+    latestBackup: getBackupMeta_(),
+    lastMaintenance: getLastMaintenanceMeta_(),
     version: VERSION,
   };
 }
@@ -2890,6 +2978,119 @@ function publicActiveTicketCard_(value) {
     round: normalized.round,
     roundLabel: normalized.round + "回目",
   };
+}
+
+function formatMemberNumber_(index) {
+  return "M" + Utilities.formatString("%04d", Math.max(1, Math.floor(Number(index) || 0)));
+}
+
+function parseMemberNumberIndex_(value) {
+  var matched = normalizeText_(value).toUpperCase().match(/(\d+)/);
+  return matched ? Math.max(0, Number(matched[1]) || 0) : 0;
+}
+
+function normalizeMemberNumber_(value) {
+  var index = parseMemberNumberIndex_(value);
+  return index > 0 ? formatMemberNumber_(index) : "";
+}
+
+function getStoredNextMemberNumberIndex_() {
+  var value = Number(PropertiesService.getScriptProperties().getProperty(NEXT_MEMBER_NUMBER_PROPERTY_KEY));
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+}
+
+function saveNextMemberNumberIndex_(value) {
+  PropertiesService.getScriptProperties().setProperty(
+    NEXT_MEMBER_NUMBER_PROPERTY_KEY,
+    String(Math.max(1, Math.floor(Number(value) || 1)))
+  );
+}
+
+function getHighestMemberNumberIndex_(profiles) {
+  var highest = 0;
+  Object.keys(profiles || {}).forEach(function (key) {
+    var profile = normalizeCustomerProfileRecord_(profiles[key], key);
+    if (!profile) return;
+    highest = Math.max(highest, parseMemberNumberIndex_(profile.memberNumber));
+  });
+  return highest;
+}
+
+function ensureCustomerProfileMemberNumbers_(profiles) {
+  var nextIndex = Math.max(getStoredNextMemberNumberIndex_(), getHighestMemberNumberIndex_(profiles) + 1, 1);
+  var changed = false;
+  Object.keys(profiles || {})
+    .sort(function (left, right) {
+      return normalizeText_(left).localeCompare(normalizeText_(right));
+    })
+    .forEach(function (key) {
+      var profile = normalizeCustomerProfileRecord_(profiles[key], key);
+      if (!profile) return;
+      if (!profile.memberNumber) {
+        profile.memberNumber = formatMemberNumber_(nextIndex);
+        nextIndex += 1;
+        profiles[key] = profile;
+        changed = true;
+      }
+    });
+  if (nextIndex !== getStoredNextMemberNumberIndex_()) {
+    saveNextMemberNumberIndex_(nextIndex);
+  }
+  return changed;
+}
+
+function getBackupMeta_() {
+  var meta = parseJson_(PropertiesService.getScriptProperties().getProperty(BACKUP_META_PROPERTY_KEY), {});
+  return {
+    at: normalizeText_(meta && meta.at),
+    fileId: normalizeText_(meta && meta.fileId),
+    fileName: normalizeText_(meta && meta.fileName),
+    fileUrl: normalizeText_(meta && meta.fileUrl),
+  };
+}
+
+function saveBackupMeta_(meta) {
+  PropertiesService.getScriptProperties().setProperty(
+    BACKUP_META_PROPERTY_KEY,
+    JSON.stringify({
+      at: normalizeText_(meta && meta.at),
+      fileId: normalizeText_(meta && meta.fileId),
+      fileName: normalizeText_(meta && meta.fileName),
+      fileUrl: normalizeText_(meta && meta.fileUrl),
+    })
+  );
+}
+
+function getLastMaintenanceMeta_() {
+  var meta = parseJson_(PropertiesService.getScriptProperties().getProperty(LAST_MAINTENANCE_META_PROPERTY_KEY), {});
+  return {
+    at: normalizeText_(meta && meta.at),
+    purged: Number(meta && meta.purged || 0),
+    autoBackupEnabled: meta && meta.autoBackupEnabled === true,
+    backupInfo: meta && meta.backupInfo ? {
+      at: normalizeText_(meta.backupInfo.at),
+      fileId: normalizeText_(meta.backupInfo.fileId),
+      fileName: normalizeText_(meta.backupInfo.fileName),
+      fileUrl: normalizeText_(meta.backupInfo.fileUrl),
+    } : null,
+  };
+}
+
+function saveLastMaintenanceMeta_(meta) {
+  PropertiesService.getScriptProperties().setProperty(
+    LAST_MAINTENANCE_META_PROPERTY_KEY,
+    JSON.stringify({
+      at: normalizeText_(meta && meta.at),
+      purged: Number(meta && meta.purged || 0),
+      autoBackupEnabled: meta && meta.autoBackupEnabled === true,
+      backupInfo: meta && meta.backupInfo ? {
+        at: normalizeText_(meta.backupInfo.at),
+        fileId: normalizeText_(meta.backupInfo.fileId),
+        fileName: normalizeText_(meta.backupInfo.fileName),
+        fileUrl: normalizeText_(meta.backupInfo.fileUrl),
+      } : null,
+    })
+  );
 }
 
 function buildActiveTicketCardFromAnswers_(answers) {
