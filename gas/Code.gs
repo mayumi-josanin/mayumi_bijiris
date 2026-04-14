@@ -3,6 +3,7 @@ var DEFAULT_SPREADSHEET_TITLE = "まゆみ助産院 ビジリス アンケート
 var MASTER_SHEET_NAME = "回答一覧";
 var ROOT_DRIVE_FOLDER_NAME = "Bijiris";
 var LEGACY_ROOT_DRIVE_FOLDER_NAMES = ["bijiris"];
+var BIJIRIS_POSTS_FOLDER_NAME = "ビジリス通信";
 var DEFAULT_ADMIN_USERNAME = "mayumi2026";
 var DEFAULT_ADMIN_PASSWORD = "3939";
 var LEGACY_ADMIN_USERNAME = "admin";
@@ -27,7 +28,7 @@ var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
 var NEXT_MEMBER_NUMBER_PROPERTY_KEY = "NEXT_MEMBER_NUMBER";
 var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
 var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
-var VERSION = "20260414-13";
+var VERSION = "20260414-14";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -205,6 +206,8 @@ var MASTER_HEADERS = [
 ];
 
 var MEASUREMENTS_SHEET_NAME = "測定履歴";
+var BIJIRIS_POSTS_SHEET_NAME = "ビジリス通信";
+var BIJIRIS_POST_ATTACHMENTS_SHEET_NAME = "ビジリス通信添付";
 var MEASUREMENT_HEADERS = [
   "作成日時",
   "更新日時",
@@ -218,6 +221,30 @@ var MEASUREMENT_HEADERS = [
   "太もも左(cm)",
   "WHR",
   "スタッフメモ",
+];
+var BIJIRIS_POST_HEADERS = [
+  "作成日時",
+  "更新日時",
+  "公開日時",
+  "投稿ID",
+  "タイトル",
+  "カテゴリ",
+  "要約",
+  "本文",
+  "公開状態",
+  "固定表示",
+];
+var BIJIRIS_POST_ATTACHMENT_HEADERS = [
+  "投稿ID",
+  "種別",
+  "表示順",
+  "ファイル名",
+  "MIMEタイプ",
+  "ファイルID",
+  "URL",
+  "プレビューURL",
+  "ダウンロードURL",
+  "サムネイルURL",
 ];
 
 function getBijirisSessionConcernOptions_() {
@@ -320,6 +347,7 @@ function handleGet_(e) {
       version: VERSION,
     };
   }
+  if (action === "bijirisPosts") return { posts: getBijirisPosts_({ publishedOnly: true }) };
   if (action === "history") {
     return getCustomerHistoryPayload_({
       clientId: params.clientId,
@@ -344,6 +372,7 @@ function handleGet_(e) {
   if (action === "adminCustomerMemos") return { memos: getCustomerMemos_() };
   if (action === "adminResponses") return { responses: getResponses_({ includeTrashed: true }) };
   if (action === "adminMeasurements") return { measurements: getMeasurements_({}) };
+  if (action === "adminBijirisPosts") return { posts: getBijirisPosts_({ includeDrafts: true }) };
   if (action === "adminUpdate") {
     return {
       response: updateResponse_(params.responseId, params.status, params.adminMemo),
@@ -361,6 +390,7 @@ function handleGet_(e) {
       customerMemos: getCustomerMemos_(),
       customerProfiles: getAdminCustomerProfiles_(),
       measurements: getMeasurements_({}),
+      bijirisPosts: getBijirisPosts_({ includeDrafts: true }),
       adminUsers: getAdminUsers_().map(publicAdminUser_),
       exportedAt: new Date().toISOString(),
     };
@@ -462,6 +492,28 @@ function handlePost_(body) {
     requireAdmin_(body.token);
     return {
       measurements: replaceMeasurements_(body.payload && body.payload.measurements),
+    };
+  }
+  if (body.action === "adminCreateBijirisPost") {
+    requireAdmin_(body.token);
+    return {
+      post: createBijirisPost_(body.payload || {}),
+    };
+  }
+  if (body.action === "adminUpdateBijirisPost") {
+    requireAdmin_(body.token);
+    return {
+      post: updateBijirisPost_(body.postId, body.payload || {}),
+    };
+  }
+  if (body.action === "adminDeleteBijirisPost") {
+    requireAdmin_(body.token);
+    return deleteBijirisPost_(body.postId);
+  }
+  if (body.action === "adminReplaceBijirisPosts") {
+    requireAdmin_(body.token);
+    return {
+      posts: replaceBijirisPosts_(body.payload && body.payload.posts),
     };
   }
   if (body.action === "adminUpdateUsers") {
@@ -1124,6 +1176,7 @@ function writeBackupFile_() {
     customerMemos: getCustomerMemos_(),
     customerProfiles: getAdminCustomerProfiles_(),
     measurements: getMeasurements_({}),
+    bijirisPosts: getBijirisPosts_({ includeDrafts: true }),
     adminUsers: getAdminUsers_().map(publicAdminUser_),
   };
   var fileName = "backup_" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss") + ".json";
@@ -2512,6 +2565,489 @@ function uploadAnalysisSheetFile_(payload) {
   };
 }
 
+function normalizeBijirisPostStatus_(value) {
+  var status = normalizeText_(value);
+  return ["published", "draft", "archived"].indexOf(status) >= 0 ? status : "draft";
+}
+
+function normalizeBijirisPostAttachmentRecord_(record, kind, index) {
+  var attachmentKind = normalizeText_(record && record.kind || kind);
+  var fileId = normalizeText_(record && record.fileId);
+  var url = normalizeText_(record && record.url);
+  var name = normalizeText_(record && record.name);
+  if (!fileId && !url && !name) return null;
+  return {
+    kind: attachmentKind || "photo",
+    sortOrder: Number(record && record.sortOrder || index || 0),
+    name: name || ("添付" + String(Number(index || 0) + 1)),
+    type: normalizeText_(record && record.type),
+    fileId: fileId,
+    url: url,
+    previewUrl: normalizeText_(record && record.previewUrl),
+    downloadUrl: normalizeText_(record && record.downloadUrl),
+    thumbnailUrl: normalizeText_(record && record.thumbnailUrl),
+  };
+}
+
+function normalizeBijirisPostRecord_(record, fallbackId) {
+  var id = normalizeText_(record && record.id || fallbackId);
+  var title = normalizeText_(record && record.title);
+  if (!id || !title) return null;
+  var photos = (Array.isArray(record && record.photos) ? record.photos : [])
+    .map(function (file, index) {
+      return normalizeBijirisPostAttachmentRecord_(file, "photo", index);
+    })
+    .filter(Boolean);
+  var documents = (Array.isArray(record && record.documents) ? record.documents : [])
+    .map(function (file, index) {
+      return normalizeBijirisPostAttachmentRecord_(file, "pdf", index);
+    })
+    .filter(Boolean);
+  return {
+    id: id,
+    title: title,
+    category: normalizeText_(record && record.category),
+    summary: normalizeText_(record && record.summary),
+    body: normalizeText_(record && record.body),
+    status: normalizeBijirisPostStatus_(record && record.status),
+    pinned: record && record.pinned === true,
+    createdAt: normalizeText_(record && record.createdAt) || new Date().toISOString(),
+    updatedAt: normalizeText_(record && record.updatedAt) || new Date().toISOString(),
+    publishedAt: normalizeText_(record && record.publishedAt),
+    photos: photos,
+    documents: documents,
+  };
+}
+
+function ensureBijirisPostsSheet_() {
+  return ensureSheet_(getSpreadsheet_(), BIJIRIS_POSTS_SHEET_NAME, BIJIRIS_POST_HEADERS);
+}
+
+function ensureBijirisPostAttachmentsSheet_() {
+  return ensureSheet_(getSpreadsheet_(), BIJIRIS_POST_ATTACHMENTS_SHEET_NAME, BIJIRIS_POST_ATTACHMENT_HEADERS);
+}
+
+function buildBijirisPostRowValues_(post) {
+  return [
+    post.createdAt || "",
+    post.updatedAt || "",
+    post.publishedAt || "",
+    post.id || "",
+    post.title || "",
+    post.category || "",
+    post.summary || "",
+    post.body || "",
+    post.status || "draft",
+    post.pinned ? "1" : "",
+  ];
+}
+
+function buildBijirisPostAttachmentRowValues_(postId, file) {
+  return [
+    postId || "",
+    file.kind || "",
+    Number(file.sortOrder || 0),
+    file.name || "",
+    file.type || "",
+    file.fileId || "",
+    file.url || "",
+    file.previewUrl || "",
+    file.downloadUrl || "",
+    file.thumbnailUrl || "",
+  ];
+}
+
+function readBijirisPostRows_() {
+  var sheet = ensureBijirisPostsSheet_();
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, BIJIRIS_POST_HEADERS.length).getValues();
+  return values
+    .map(function (row) {
+      return normalizeBijirisPostRecord_({
+        createdAt: stringifyDate_(row[0]),
+        updatedAt: stringifyDate_(row[1]),
+        publishedAt: stringifyDate_(row[2]),
+        id: String(row[3] || ""),
+        title: String(row[4] || ""),
+        category: String(row[5] || ""),
+        summary: String(row[6] || ""),
+        body: String(row[7] || ""),
+        status: String(row[8] || ""),
+        pinned: String(row[9] || "") === "1",
+      }, row[3]);
+    })
+    .filter(Boolean);
+}
+
+function readBijirisPostAttachmentRows_() {
+  var sheet = ensureBijirisPostAttachmentsSheet_();
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, BIJIRIS_POST_ATTACHMENT_HEADERS.length).getValues();
+  return values
+    .map(function (row) {
+      var attachment = normalizeBijirisPostAttachmentRecord_({
+        kind: String(row[1] || ""),
+        sortOrder: row[2],
+        name: String(row[3] || ""),
+        type: String(row[4] || ""),
+        fileId: String(row[5] || ""),
+        url: String(row[6] || ""),
+        previewUrl: String(row[7] || ""),
+        downloadUrl: String(row[8] || ""),
+        thumbnailUrl: String(row[9] || ""),
+      }, row[1], row[2]);
+      if (!attachment) return null;
+      attachment.postId = String(row[0] || "");
+      return attachment;
+    })
+    .filter(Boolean);
+}
+
+function publicBijirisPost_(post) {
+  var normalized = normalizeBijirisPostRecord_(post, post && post.id);
+  if (!normalized) return null;
+  return {
+    id: normalized.id,
+    title: normalized.title,
+    category: normalized.category,
+    summary: normalized.summary,
+    body: normalized.body,
+    status: normalized.status,
+    pinned: normalized.pinned,
+    createdAt: normalized.createdAt,
+    updatedAt: normalized.updatedAt,
+    publishedAt: normalized.publishedAt,
+    photos: normalized.photos,
+    documents: normalized.documents,
+  };
+}
+
+function compareBijirisPostRecords_(a, b) {
+  if (Boolean(b && b.pinned) !== Boolean(a && a.pinned)) {
+    return b && b.pinned ? 1 : -1;
+  }
+  var aTime = new Date(a && (a.publishedAt || a.updatedAt || a.createdAt) || 0).getTime();
+  var bTime = new Date(b && (b.publishedAt || b.updatedAt || b.createdAt) || 0).getTime();
+  return bTime - aTime;
+}
+
+function getBijirisPosts_(filter) {
+  ensureSpreadsheet_();
+  var attachmentsByPostId = {};
+  readBijirisPostAttachmentRows_().forEach(function (attachment) {
+    var postId = normalizeText_(attachment && attachment.postId);
+    if (!postId) return;
+    if (!attachmentsByPostId[postId]) {
+      attachmentsByPostId[postId] = { photos: [], documents: [] };
+    }
+    if (attachment.kind === "pdf") {
+      attachmentsByPostId[postId].documents.push(attachment);
+    } else {
+      attachmentsByPostId[postId].photos.push(attachment);
+    }
+  });
+
+  return readBijirisPostRows_()
+    .map(function (post) {
+      var attachments = attachmentsByPostId[post.id] || { photos: [], documents: [] };
+      return publicBijirisPost_(Object.assign({}, post, {
+        photos: attachments.photos.sort(function (a, b) { return Number(a.sortOrder || 0) - Number(b.sortOrder || 0); }),
+        documents: attachments.documents.sort(function (a, b) { return Number(a.sortOrder || 0) - Number(b.sortOrder || 0); }),
+      }));
+    })
+    .filter(function (post) {
+      if (!post) return false;
+      if (filter && filter.publishedOnly) return post.status === "published";
+      if (filter && filter.includeDrafts) return true;
+      return post.status !== "archived";
+    })
+    .sort(compareBijirisPostRecords_);
+}
+
+function rewriteBijirisPostsSheets_(posts) {
+  var normalizedPosts = (Array.isArray(posts) ? posts : [])
+    .map(function (post) { return normalizeBijirisPostRecord_(post, post && post.id); })
+    .filter(Boolean);
+  var postSheet = ensureBijirisPostsSheet_();
+  var attachmentSheet = ensureBijirisPostAttachmentsSheet_();
+  if (postSheet.getLastRow() > 1) {
+    postSheet.deleteRows(2, postSheet.getLastRow() - 1);
+  }
+  if (attachmentSheet.getLastRow() > 1) {
+    attachmentSheet.deleteRows(2, attachmentSheet.getLastRow() - 1);
+  }
+  if (normalizedPosts.length) {
+    postSheet.getRange(2, 1, normalizedPosts.length, BIJIRIS_POST_HEADERS.length).setValues(
+      normalizedPosts.map(buildBijirisPostRowValues_)
+    );
+  }
+  var attachmentRows = [];
+  normalizedPosts.forEach(function (post) {
+    (post.photos || []).forEach(function (file, index) {
+      attachmentRows.push(buildBijirisPostAttachmentRowValues_(post.id, Object.assign({}, file, {
+        kind: "photo",
+        sortOrder: index,
+      })));
+    });
+    (post.documents || []).forEach(function (file, index) {
+      attachmentRows.push(buildBijirisPostAttachmentRowValues_(post.id, Object.assign({}, file, {
+        kind: "pdf",
+        sortOrder: index,
+      })));
+    });
+  });
+  if (attachmentRows.length) {
+    attachmentSheet.getRange(2, 1, attachmentRows.length, BIJIRIS_POST_ATTACHMENT_HEADERS.length).setValues(attachmentRows);
+  }
+}
+
+function getBijirisPostsRootFolder_() {
+  return getChildFolderByName_(getRootPhotoFolder_(), BIJIRIS_POSTS_FOLDER_NAME);
+}
+
+function getBijirisPostFolder_(postId) {
+  return getChildFolderByName_(getBijirisPostsRootFolder_(), "post_" + sanitizeFolderName_(postId));
+}
+
+function trashDriveFilesByRecords_(files) {
+  (Array.isArray(files) ? files : []).forEach(function (file) {
+    var fileId = normalizeText_(file && file.fileId);
+    if (!fileId) return;
+    try {
+      DriveApp.getFileById(fileId).setTrashed(true);
+    } catch (error) {
+      // Ignore already-deleted or inaccessible files.
+    }
+  });
+}
+
+function saveBijirisPostImageFiles_(files, postId) {
+  var folder = getChildFolderByName_(getBijirisPostFolder_(postId), "photos");
+  return (Array.isArray(files) ? files : []).slice(0, 8).map(function (file, index) {
+    var dataUrl = String(file && file.dataUrl || "");
+    var match = dataUrl.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
+    if (!match) throw new Error("写真データの形式が正しくありません。");
+    var mimeType = match[1].replace("image/jpg", "image/jpeg");
+    var extension = mimeType.split("/")[1].replace("jpeg", "jpg");
+    var fileName = sanitizeFileName_(normalizeText_(file && file.name) || ("photo_" + String(index + 1).padStart(2, "0") + "." + extension));
+    var blob = Utilities.newBlob(Utilities.base64Decode(match[2]), mimeType, fileName);
+    var driveFile = folder.createFile(blob);
+    driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var fileId = driveFile.getId();
+    return {
+      kind: "photo",
+      sortOrder: index,
+      name: fileName,
+      type: mimeType,
+      fileId: fileId,
+      url: driveFile.getUrl(),
+      previewUrl: "https://drive.google.com/uc?export=view&id=" + fileId,
+      downloadUrl: "https://drive.google.com/uc?export=download&id=" + fileId,
+      thumbnailUrl: "https://drive.google.com/thumbnail?id=" + fileId + "&sz=w1200",
+    };
+  });
+}
+
+function saveBijirisPostDocumentFiles_(files, postId) {
+  var folder = getChildFolderByName_(getBijirisPostFolder_(postId), "pdf");
+  return (Array.isArray(files) ? files : []).slice(0, 5).map(function (file, index) {
+    var base64Data = normalizeText_(file && file.base64Data);
+    var mimeType = normalizeText_(file && (file.mimeType || file.type)) || MimeType.PDF;
+    if (!base64Data) throw new Error("PDF データの形式が正しくありません。");
+    if (mimeType !== MimeType.PDF && mimeType !== "application/pdf") {
+      throw new Error("PDF のみ添付できます。");
+    }
+    var fileName = sanitizeFileName_(normalizeText_(file && file.name) || ("document_" + String(index + 1).padStart(2, "0") + ".pdf"));
+    if (!/\.pdf$/i.test(fileName)) fileName += ".pdf";
+    var blob = Utilities.newBlob(Utilities.base64Decode(base64Data), MimeType.PDF, fileName);
+    var driveFile = folder.createFile(blob);
+    driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var fileId = driveFile.getId();
+    return {
+      kind: "pdf",
+      sortOrder: index,
+      name: fileName,
+      type: MimeType.PDF,
+      fileId: fileId,
+      url: driveFile.getUrl(),
+      previewUrl: "https://drive.google.com/file/d/" + fileId + "/preview",
+      downloadUrl: "https://drive.google.com/uc?export=download&id=" + fileId,
+      thumbnailUrl: "",
+    };
+  });
+}
+
+function syncBijirisPostFiles_(existingFiles, nextFiles, postId, kind) {
+  var currentFiles = Array.isArray(existingFiles) ? existingFiles : [];
+  var requestedFiles = Array.isArray(nextFiles) ? nextFiles : [];
+  var existingById = {};
+  var keptIds = {};
+  var keptFiles = [];
+  var newFiles = [];
+
+  currentFiles.forEach(function (file) {
+    var fileId = normalizeText_(file && file.fileId);
+    if (fileId) existingById[fileId] = file;
+  });
+
+  requestedFiles.forEach(function (file) {
+    var fileId = normalizeText_(file && file.fileId);
+    if ((file && file.dataUrl) || (file && file.base64Data)) {
+      newFiles.push(file);
+      return;
+    }
+    if (!fileId || !existingById[fileId] || keptIds[fileId]) return;
+    keptIds[fileId] = true;
+    keptFiles.push(existingById[fileId]);
+  });
+
+  currentFiles.forEach(function (file) {
+    var fileId = normalizeText_(file && file.fileId);
+    if (!fileId || keptIds[fileId]) return;
+    trashDriveFilesByRecords_([file]);
+  });
+
+  return keptFiles.concat(
+    kind === "pdf"
+      ? saveBijirisPostDocumentFiles_(newFiles, postId)
+      : saveBijirisPostImageFiles_(newFiles, postId)
+  );
+}
+
+function createBijirisPost_(payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var now = new Date().toISOString();
+    var status = normalizeBijirisPostStatus_(payload && payload.status);
+    var postId = normalizeText_(payload && payload.id) || makeId_("bijiris");
+    var record = normalizeBijirisPostRecord_({
+      id: postId,
+      title: payload && payload.title,
+      category: payload && payload.category,
+      summary: payload && payload.summary,
+      body: payload && payload.body,
+      status: status,
+      pinned: payload && payload.pinned === true,
+      createdAt: now,
+      updatedAt: now,
+      publishedAt: status === "published" ? normalizeText_(payload && payload.publishedAt) || now : "",
+      photos: [],
+      documents: [],
+    }, postId);
+    if (!record) throw new Error("タイトルを入力してください。");
+    record.photos = syncBijirisPostFiles_([], payload && payload.photos, record.id, "photo");
+    record.documents = syncBijirisPostFiles_([], payload && payload.documents, record.id, "pdf");
+    if (!record.summary && !record.body && !record.photos.length && !record.documents.length) {
+      throw new Error("本文、要約、写真、PDF のいずれかを入力してください。");
+    }
+    var posts = getBijirisPosts_({ includeDrafts: true }).concat([record]);
+    rewriteBijirisPostsSheets_(posts);
+    appendAuditLog_("bijiris_post.create", {
+      postId: record.id,
+      title: record.title,
+      status: record.status,
+    });
+    return publicBijirisPost_(record);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateBijirisPost_(postId, payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var posts = getBijirisPosts_({ includeDrafts: true });
+    var existing = posts.filter(function (post) { return post.id === normalizeText_(postId); })[0];
+    if (!existing) throw new Error("投稿が見つかりません。");
+    var now = new Date().toISOString();
+    var status = normalizeBijirisPostStatus_(Object.prototype.hasOwnProperty.call(payload || {}, "status") ? payload.status : existing.status);
+    var updated = normalizeBijirisPostRecord_({
+      id: existing.id,
+      title: Object.prototype.hasOwnProperty.call(payload || {}, "title") ? payload.title : existing.title,
+      category: Object.prototype.hasOwnProperty.call(payload || {}, "category") ? payload.category : existing.category,
+      summary: Object.prototype.hasOwnProperty.call(payload || {}, "summary") ? payload.summary : existing.summary,
+      body: Object.prototype.hasOwnProperty.call(payload || {}, "body") ? payload.body : existing.body,
+      status: status,
+      pinned: Object.prototype.hasOwnProperty.call(payload || {}, "pinned") ? payload.pinned === true : existing.pinned,
+      createdAt: existing.createdAt,
+      updatedAt: now,
+      publishedAt: status === "published" ? (normalizeText_(payload && payload.publishedAt) || existing.publishedAt || now) : existing.publishedAt,
+      photos: [],
+      documents: [],
+    }, existing.id);
+    if (!updated) throw new Error("タイトルを入力してください。");
+    updated.photos = syncBijirisPostFiles_(
+      existing.photos,
+      Object.prototype.hasOwnProperty.call(payload || {}, "photos") ? payload.photos : existing.photos,
+      updated.id,
+      "photo"
+    );
+    updated.documents = syncBijirisPostFiles_(
+      existing.documents,
+      Object.prototype.hasOwnProperty.call(payload || {}, "documents") ? payload.documents : existing.documents,
+      updated.id,
+      "pdf"
+    );
+    if (!updated.summary && !updated.body && !updated.photos.length && !updated.documents.length) {
+      throw new Error("本文、要約、写真、PDF のいずれかを入力してください。");
+    }
+    rewriteBijirisPostsSheets_(
+      posts.map(function (post) {
+        return post.id === updated.id ? updated : post;
+      })
+    );
+    appendAuditLog_("bijiris_post.update", {
+      postId: updated.id,
+      title: updated.title,
+      status: updated.status,
+    });
+    return publicBijirisPost_(updated);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function deleteBijirisPost_(postId) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var posts = getBijirisPosts_({ includeDrafts: true });
+    var existing = posts.filter(function (post) { return post.id === normalizeText_(postId); })[0];
+    if (!existing) throw new Error("投稿が見つかりません。");
+    trashDriveFilesByRecords_((existing.photos || []).concat(existing.documents || []));
+    rewriteBijirisPostsSheets_(
+      posts.filter(function (post) { return post.id !== existing.id; })
+    );
+    appendAuditLog_("bijiris_post.delete", {
+      postId: existing.id,
+      title: existing.title,
+    });
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function replaceBijirisPosts_(posts) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    rewriteBijirisPostsSheets_(Array.isArray(posts) ? posts : []);
+    appendAuditLog_("bijiris_post.replace", {
+      count: Array.isArray(posts) ? posts.length : 0,
+    });
+    return getBijirisPosts_({ includeDrafts: true });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function normalizeMeasurementRecord_(record, fallbackId) {
   var id = normalizeText_(record && record.id || fallbackId);
   var customerName = normalizeText_(record && record.customerName);
@@ -3319,6 +3855,8 @@ function ensureSpreadsheet_() {
   var spreadsheet = getSpreadsheet_();
   ensureSheet_(spreadsheet, MASTER_SHEET_NAME, MASTER_HEADERS);
   ensureMeasurementsSheet_();
+  ensureBijirisPostsSheet_();
+  ensureBijirisPostAttachmentsSheet_();
   getSurveys_().forEach(ensureSurveySheet_);
 }
 
@@ -3343,6 +3881,7 @@ function getAdminInfo_() {
   var rootFolder = getRootPhotoFolder_();
   var credentials = getAdminCredentials_();
   var backupFolder = getBackupFolder_();
+  var bijirisPostsFolder = getBijirisPostsRootFolder_();
   return {
     backend: "gas",
     adminUsername: credentials.username,
@@ -3353,6 +3892,7 @@ function getAdminInfo_() {
     masterSheetName: MASTER_SHEET_NAME,
     photoRootFolderName: ROOT_DRIVE_FOLDER_NAME,
     photoRootFolderUrl: rootFolder.getUrl(),
+    bijirisPostsFolderUrl: bijirisPostsFolder.getUrl(),
     backupFolderUrl: backupFolder.getUrl(),
     customerProfiles: getAdminCustomerProfiles_(),
     latestBackup: getBackupMeta_(),
