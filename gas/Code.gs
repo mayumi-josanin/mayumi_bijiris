@@ -24,7 +24,7 @@ var LOGIN_ATTEMPTS_PROPERTY_KEY = "LOGIN_ATTEMPTS_JSON";
 var ADMIN_USERS_PROPERTY_KEY = "ADMIN_USERS_JSON";
 var OTP_SESSIONS_PROPERTY_KEY = "OTP_SESSIONS_JSON";
 var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
-var VERSION = "20260413-13";
+var VERSION = "20260414-09";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -208,6 +208,7 @@ function getBijirisSessionConcernOptions_() {
       options.push(option);
     });
   });
+  options.push("その他（長文）");
   return options;
 }
 
@@ -226,6 +227,7 @@ var SURVEYS = [
       { id: "q_bijiris_session_ticket_round", label: "回数券の何回目ですか？", type: "choice", required: true, options: BIJIRIS_SESSION_TICKET_ROUND_OPTIONS, visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
       { id: "q_bijiris_session_feeling", label: "本日のビジリスの体感はいかがでしたか？　以前と比べて変化したことなどがあればご記載ください", type: "textarea", required: true, options: [] },
       { id: "q_bijiris_session_concern", label: "普段のお身体のお悩みや、ビジリス（骨盤底筋ケア）について気になること・知りたいことはありますか？（複数選択可）", type: "checkbox", required: false, options: getBijirisSessionConcernOptions_() },
+      { id: "q_bijiris_session_concern_other", label: "気になること・知りたいこと（その他・長文）", type: "textarea", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_concern", value: "その他（長文）" } },
       { id: "q_bijiris_session_life_changes", label: "日常生活にどのような変化がありましたか？（複数選択可）", type: "checkbox", required: false, options: BIJIRIS_SESSION_LIFE_CHANGE_OPTIONS },
       { id: "q_bijiris_session_life_changes_other", label: "日常生活の変化（その他）", type: "textarea", required: false, options: [], visibleWhen: { questionId: "q_bijiris_session_life_changes", value: "その他（自由記述）" } },
       { id: "q_bijiris_session_monitor_photos_6", label: "モニター時の写真2枚", type: "photo", required: true, options: [], visibilityConditions: [{ questionId: "q_bijiris_session_type", value: "回数券" }, { questionId: "q_bijiris_session_ticket_plan", value: "6回券" }, { questionId: "q_bijiris_session_ticket_round", value: "6回目" }], visibleWhen: { questionId: "q_bijiris_session_type", value: "回数券" } },
@@ -502,12 +504,30 @@ function mergeDefaultSurveyFields_(survey) {
     var defaultQuestion = defaultQuestionMap[normalizeText_(question && question.id)];
     if (!defaultQuestion) return question;
     var currentConditions = getQuestionVisibilityConditions_(question);
-    if (currentConditions.length) return question;
     var defaultConditions = getQuestionVisibilityConditions_(defaultQuestion);
-    return Object.assign({}, question, {
+    var merged = Object.assign({}, question, {
       visibilityConditions: defaultConditions,
       visibleWhen: defaultConditions.length ? defaultConditions[0] : null,
     });
+    if (Array.isArray(defaultQuestion.options) && defaultQuestion.options.length) {
+      var currentOptions = Array.isArray(question.options) ? question.options.slice() : [];
+      defaultQuestion.options.forEach(function (option) {
+        if (currentOptions.indexOf(option) === -1) currentOptions.push(option);
+      });
+      merged.options = currentOptions;
+    }
+    if (currentConditions.length) {
+      merged.visibilityConditions = currentConditions;
+      merged.visibleWhen = currentConditions[0] || null;
+    }
+    return merged;
+  });
+  var existingQuestionIds = normalizedSurvey.questions.map(function (question) {
+    return normalizeText_(question && question.id);
+  });
+  defaults.questions.forEach(function (question) {
+    if (existingQuestionIds.indexOf(normalizeText_(question && question.id)) >= 0) return;
+    normalizedSurvey.questions.push(JSON.parse(JSON.stringify(question)));
   });
   if (!normalizedSurvey.introMessage) normalizedSurvey.introMessage = defaults.introMessage || defaults.description || "";
   if (!normalizedSurvey.completionMessage) {
