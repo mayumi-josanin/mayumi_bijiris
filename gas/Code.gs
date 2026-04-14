@@ -452,6 +452,12 @@ function handlePost_(body) {
     requireAdmin_(body.token);
     return deleteMeasurement_(body.measurementId);
   }
+  if (body.action === "adminUploadAnalysisSheet") {
+    requireAdmin_(body.token);
+    return {
+      file: uploadAnalysisSheetFile_(body.payload || {}),
+    };
+  }
   if (body.action === "adminReplaceMeasurements") {
     requireAdmin_(body.token);
     return {
@@ -2415,6 +2421,57 @@ function getCustomerPhotoFolder_(customerName) {
   var folderName = sanitizeFolderName_(customerName) || "お名前未設定";
   var folders = rootFolder.getFoldersByName(folderName);
   return folders.hasNext() ? folders.next() : rootFolder.createFolder(folderName);
+}
+
+function getChildFolderByName_(parentFolder, folderName) {
+  var normalizedName = sanitizeFolderName_(folderName) || "名称未設定";
+  var folders = parentFolder.getFoldersByName(normalizedName);
+  return folders.hasNext() ? folders.next() : parentFolder.createFolder(normalizedName);
+}
+
+function getAnalysisSheetRootFolder_() {
+  return getChildFolderByName_(getRootPhotoFolder_(), "分析シート");
+}
+
+function uploadAnalysisSheetFile_(payload) {
+  var customerName = normalizeText_(payload && payload.customerName);
+  var fileName = normalizeText_(payload && payload.fileName);
+  var base64Data = normalizeText_(payload && payload.base64Data);
+  var mimeType = normalizeText_(payload && payload.mimeType) || MimeType.PDF;
+  var replaceExisting = payload && payload.replaceExisting === false ? false : true;
+  if (!customerName) throw new Error("顧客名が必要です。");
+  if (!fileName) throw new Error("ファイル名が必要です。");
+  if (!base64Data) throw new Error("ファイルデータが必要です。");
+
+  var analysisRoot = getAnalysisSheetRootFolder_();
+  var customerFolder = getChildFolderByName_(analysisRoot, customerName);
+
+  if (replaceExisting) {
+    var existingFiles = customerFolder.getFilesByName(fileName);
+    while (existingFiles.hasNext()) {
+      try {
+        existingFiles.next().setTrashed(true);
+      } catch (error) {
+        // Ignore inaccessible files.
+      }
+    }
+  }
+
+  var blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType, fileName);
+  var file = customerFolder.createFile(blob);
+  appendAuditLog_("analysis_sheet.upload", {
+    customerName: customerName,
+    fileName: fileName,
+    fileId: file.getId(),
+  });
+  return {
+    customerName: customerName,
+    fileName: file.getName(),
+    fileId: file.getId(),
+    fileUrl: file.getUrl(),
+    folderId: customerFolder.getId(),
+    folderUrl: customerFolder.getUrl(),
+  };
 }
 
 function normalizeMeasurementRecord_(record, fallbackId) {
