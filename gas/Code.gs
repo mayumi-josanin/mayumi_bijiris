@@ -27,7 +27,7 @@ var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
 var NEXT_MEMBER_NUMBER_PROPERTY_KEY = "NEXT_MEMBER_NUMBER";
 var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
 var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
-var VERSION = "20260414-11";
+var VERSION = "20260414-13";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -1369,6 +1369,40 @@ function publicCustomerProfile_(record) {
   };
 }
 
+function publicMeasurementRecord_(record) {
+  if (!record) return null;
+  var waist = normalizeMeasurementValue_(record.waist);
+  var hip = normalizeMeasurementValue_(record.hip);
+  var thighRight = normalizeMeasurementValue_(record.thighRight);
+  var thighLeft = normalizeMeasurementValue_(record.thighLeft);
+  var whr = "";
+  if (waist !== "" && hip !== "" && Number(hip) > 0) {
+    whr = Math.round((Number(waist) / Number(hip)) * 1000) / 1000;
+  }
+  return {
+    id: normalizeText_(record.id),
+    customerName: normalizeText_(record.customerName),
+    memberNumber: normalizeMemberNumber_(record.memberNumber),
+    measuredAt: normalizeText_(record.measuredAt),
+    waist: waist,
+    hip: hip,
+    thighRight: thighRight,
+    thighLeft: thighLeft,
+    whr: whr,
+    createdAt: normalizeText_(record.createdAt),
+    updatedAt: normalizeText_(record.updatedAt),
+    target: publicMeasurementTargets_(record.target),
+  };
+}
+
+function getPublicMeasurementsForCustomer_(customerName) {
+  var normalizedName = normalizeText_(customerName);
+  if (!normalizedName) return [];
+  return getMeasurements_({ customerName: normalizedName })
+    .map(publicMeasurementRecord_)
+    .filter(Boolean);
+}
+
 function pickCustomerProfileMatch_(matches, customerNameKana) {
   if (!matches || !matches.length) return null;
   var normalizedKana = normalizeKana_(customerNameKana);
@@ -1729,6 +1763,7 @@ function getCustomerHistoryPayload_(filter) {
     return {
       responses: responses,
       customerProfile: publicCustomerProfile_(profile),
+      measurements: getPublicMeasurementsForCustomer_(profile && profile.name),
     };
   }
 
@@ -1777,6 +1812,9 @@ function getCustomerHistoryPayload_(filter) {
   return {
     responses: responses,
     customerProfile: publicCustomerProfile_(profile),
+    measurements: getPublicMeasurementsForCustomer_(
+      profile && profile.name || normalizedFilter.customerName
+    ),
   };
 }
 
