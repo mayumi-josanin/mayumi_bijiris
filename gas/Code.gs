@@ -27,7 +27,7 @@ var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
 var NEXT_MEMBER_NUMBER_PROPERTY_KEY = "NEXT_MEMBER_NUMBER";
 var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
 var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
-var VERSION = "20260414-10";
+var VERSION = "20260414-11";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -204,6 +204,22 @@ var MASTER_HEADERS = [
   "管理更新日時",
 ];
 
+var MEASUREMENTS_SHEET_NAME = "測定履歴";
+var MEASUREMENT_HEADERS = [
+  "作成日時",
+  "更新日時",
+  "測定ID",
+  "顧客名",
+  "会員番号",
+  "測定日",
+  "ウエスト(cm)",
+  "ヒップ(cm)",
+  "太もも右(cm)",
+  "太もも左(cm)",
+  "WHR",
+  "スタッフメモ",
+];
+
 function getBijirisSessionConcernOptions_() {
   var options = [];
   BIJIRIS_SESSION_CONCERN_CATEGORIES.forEach(function (category) {
@@ -327,6 +343,7 @@ function handleGet_(e) {
   if (action === "adminLogs") return getLogs_();
   if (action === "adminCustomerMemos") return { memos: getCustomerMemos_() };
   if (action === "adminResponses") return { responses: getResponses_({ includeTrashed: true }) };
+  if (action === "adminMeasurements") return { measurements: getMeasurements_({}) };
   if (action === "adminUpdate") {
     return {
       response: updateResponse_(params.responseId, params.status, params.adminMemo),
@@ -343,6 +360,7 @@ function handleGet_(e) {
       preferences: getPreferences_(),
       customerMemos: getCustomerMemos_(),
       customerProfiles: getAdminCustomerProfiles_(),
+      measurements: getMeasurements_({}),
       adminUsers: getAdminUsers_().map(publicAdminUser_),
       exportedAt: new Date().toISOString(),
     };
@@ -417,6 +435,28 @@ function handlePost_(body) {
   if (body.action === "adminDeleteCustomer") {
     requireAdmin_(body.token);
     return deleteCustomerProfile_(body.customerName);
+  }
+  if (body.action === "adminCreateMeasurement") {
+    requireAdmin_(body.token);
+    return {
+      measurement: createMeasurement_(body.customerName, body.payload || {}),
+    };
+  }
+  if (body.action === "adminUpdateMeasurement") {
+    requireAdmin_(body.token);
+    return {
+      measurement: updateMeasurement_(body.measurementId, body.payload || {}),
+    };
+  }
+  if (body.action === "adminDeleteMeasurement") {
+    requireAdmin_(body.token);
+    return deleteMeasurement_(body.measurementId);
+  }
+  if (body.action === "adminReplaceMeasurements") {
+    requireAdmin_(body.token);
+    return {
+      measurements: replaceMeasurements_(body.payload && body.payload.measurements),
+    };
   }
   if (body.action === "adminUpdateUsers") {
     requireAdmin_(body.token);
@@ -1077,6 +1117,7 @@ function writeBackupFile_() {
     preferences: getPreferences_(),
     customerMemos: getCustomerMemos_(),
     customerProfiles: getAdminCustomerProfiles_(),
+    measurements: getMeasurements_({}),
     adminUsers: getAdminUsers_().map(publicAdminUser_),
   };
   var fileName = "backup_" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd_HHmmss") + ".json";
@@ -1211,6 +1252,54 @@ function updateCustomerMemo_(customerName, memo) {
   return memos;
 }
 
+function normalizeMeasurementValue_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  var normalized = String(value).replace(/[^\d.-]/g, "");
+  if (!normalized) return "";
+  var parsed = Number(normalized);
+  if (!isFinite(parsed)) return "";
+  return Math.round(parsed * 10) / 10;
+}
+
+function normalizeMeasurementDate_(value) {
+  var normalized = normalizeText_(value);
+  if (!normalized) return "";
+  var date = new Date(normalized);
+  if (isNaN(date.getTime())) return "";
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+function computeMeasurementWhr_(waist, hip) {
+  var normalizedWaist = normalizeMeasurementValue_(waist);
+  var normalizedHip = normalizeMeasurementValue_(hip);
+  if (normalizedWaist === "" || normalizedHip === "" || !(normalizedHip > 0)) return "";
+  return Math.round((normalizedWaist / normalizedHip) * 1000) / 1000;
+}
+
+function normalizeMeasurementTargets_(value) {
+  var targets = {
+    waist: normalizeMeasurementValue_(value && value.waist),
+    hip: normalizeMeasurementValue_(value && value.hip),
+    thighRight: normalizeMeasurementValue_(value && value.thighRight),
+    thighLeft: normalizeMeasurementValue_(value && value.thighLeft),
+  };
+  var hasAny = Object.keys(targets).some(function (key) {
+    return targets[key] !== "";
+  });
+  return hasAny ? targets : null;
+}
+
+function publicMeasurementTargets_(value) {
+  var normalized = normalizeMeasurementTargets_(value);
+  if (!normalized) return null;
+  return {
+    waist: normalized.waist === "" ? "" : normalized.waist,
+    hip: normalized.hip === "" ? "" : normalized.hip,
+    thighRight: normalized.thighRight === "" ? "" : normalized.thighRight,
+    thighLeft: normalized.thighLeft === "" ? "" : normalized.thighLeft,
+  };
+}
+
 function normalizeCustomerProfileRecord_(record, fallbackName) {
   var name = normalizeText_(record && record.name || fallbackName);
   if (!name) return null;
@@ -1233,6 +1322,7 @@ function normalizeCustomerProfileRecord_(record, fallbackName) {
     aliases: aliases,
     clientIds: clientIds,
     activeTicketCard: normalizeActiveTicketCard_(record && record.activeTicketCard),
+    measurementTargets: normalizeMeasurementTargets_(record && record.measurementTargets),
     adminManaged: record && record.adminManaged === true,
     updatedAt: normalizeText_(record && record.updatedAt) || new Date().toISOString(),
   };
@@ -1268,6 +1358,7 @@ function publicCustomerProfile_(record) {
     memberNumber: normalizeMemberNumber_(record.memberNumber),
     nameKana: normalizeKana_(record.nameKana),
     activeTicketCard: publicActiveTicketCard_(record.activeTicketCard),
+    measurementTargets: publicMeasurementTargets_(record.measurementTargets),
     updatedAt: normalizeText_(record.updatedAt),
   };
 }
@@ -1322,7 +1413,9 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
   var normalized = normalizeCustomerProfileRecord_(record, record && record.name);
   if (!normalized) return null;
   var replaceActiveTicketCard = options && options.replaceActiveTicketCard === true;
+  var replaceMeasurementTargets = options && options.replaceMeasurementTargets === true;
   var requestedActiveTicketCard = normalizeActiveTicketCard_(record && record.activeTicketCard);
+  var requestedMeasurementTargets = normalizeMeasurementTargets_(record && record.measurementTargets);
   if (previousKey && previousKey !== normalized.name) {
     delete profiles[previousKey];
   }
@@ -1346,6 +1439,13 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
     normalized.activeTicketCard = requestedActiveTicketCard;
   } else if (existing && existing.activeTicketCard) {
     normalized.activeTicketCard = normalizeActiveTicketCard_(existing.activeTicketCard);
+  }
+  if (replaceMeasurementTargets) {
+    normalized.measurementTargets = requestedMeasurementTargets;
+  } else if (requestedMeasurementTargets) {
+    normalized.measurementTargets = requestedMeasurementTargets;
+  } else if (existing && existing.measurementTargets) {
+    normalized.measurementTargets = normalizeMeasurementTargets_(existing.measurementTargets);
   }
   if (!normalized.memberNumber) {
     var nextIndex = Math.max(getStoredNextMemberNumberIndex_(), getHighestMemberNumberIndex_(profiles) + 1, 1);
@@ -1459,6 +1559,7 @@ function updateAdminCustomerProfileRecord_(currentName, nextName, responses, opt
   if (!fromName || !toName) return null;
   var normalizedOptions = options && typeof options === "object" ? options : {};
   var shouldReplaceActiveTicketCard = Object.prototype.hasOwnProperty.call(normalizedOptions, "activeTicketCard");
+  var shouldReplaceMeasurementTargets = Object.prototype.hasOwnProperty.call(normalizedOptions, "measurementTargets");
 
   var profiles = getCustomerProfiles_();
   var match = findCustomerProfileByName_(profiles, fromName, "");
@@ -1505,9 +1606,13 @@ function updateAdminCustomerProfileRecord_(currentName, nextName, responses, opt
   if (shouldReplaceActiveTicketCard) {
     record.activeTicketCard = normalizeActiveTicketCard_(normalizedOptions.activeTicketCard);
   }
+  if (shouldReplaceMeasurementTargets) {
+    record.measurementTargets = normalizeMeasurementTargets_(normalizedOptions.measurementTargets);
+  }
 
   var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
     replaceActiveTicketCard: shouldReplaceActiveTicketCard,
+    replaceMeasurementTargets: shouldReplaceMeasurementTargets,
   });
   saveCustomerProfiles_(profiles);
   return saved;
@@ -2312,6 +2417,354 @@ function getCustomerPhotoFolder_(customerName) {
   return folders.hasNext() ? folders.next() : rootFolder.createFolder(folderName);
 }
 
+function normalizeMeasurementRecord_(record, fallbackId) {
+  var id = normalizeText_(record && record.id || fallbackId);
+  var customerName = normalizeText_(record && record.customerName);
+  var measuredAt = normalizeMeasurementDate_(record && record.measuredAt);
+  if (!id || !customerName || !measuredAt) return null;
+  var waist = normalizeMeasurementValue_(record && record.waist);
+  var hip = normalizeMeasurementValue_(record && record.hip);
+  var thighRight = normalizeMeasurementValue_(record && record.thighRight);
+  var thighLeft = normalizeMeasurementValue_(record && record.thighLeft);
+  return {
+    id: id,
+    customerName: customerName,
+    memberNumber: normalizeMemberNumber_(record && record.memberNumber),
+    measuredAt: measuredAt,
+    waist: waist,
+    hip: hip,
+    thighRight: thighRight,
+    thighLeft: thighLeft,
+    whr: computeMeasurementWhr_(waist, hip),
+    memo: normalizeText_(record && record.memo),
+    createdAt: normalizeText_(record && record.createdAt) || new Date().toISOString(),
+    updatedAt: normalizeText_(record && record.updatedAt) || new Date().toISOString(),
+  };
+}
+
+function buildMeasurementRowValues_(record) {
+  return [
+    record.createdAt || "",
+    record.updatedAt || "",
+    record.id || "",
+    record.customerName || "",
+    record.memberNumber || "",
+    record.measuredAt || "",
+    record.waist === "" ? "" : record.waist,
+    record.hip === "" ? "" : record.hip,
+    record.thighRight === "" ? "" : record.thighRight,
+    record.thighLeft === "" ? "" : record.thighLeft,
+    record.whr === "" ? "" : record.whr,
+    record.memo || "",
+  ];
+}
+
+function hasMeasurementValues_(record) {
+  return ["waist", "hip", "thighRight", "thighLeft"].some(function (key) {
+    return record && record[key] !== "";
+  });
+}
+
+function ensureMeasurementsSheet_() {
+  return ensureSheet_(getSpreadsheet_(), MEASUREMENTS_SHEET_NAME, MEASUREMENT_HEADERS);
+}
+
+function readMeasurementRows_() {
+  var sheet = ensureMeasurementsSheet_();
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, MEASUREMENT_HEADERS.length).getValues();
+  return values
+    .map(function (row) {
+      return normalizeMeasurementRecord_({
+        createdAt: stringifyDate_(row[0]),
+        updatedAt: stringifyDate_(row[1]),
+        id: String(row[2] || ""),
+        customerName: String(row[3] || ""),
+        memberNumber: String(row[4] || ""),
+        measuredAt: row[5],
+        waist: row[6],
+        hip: row[7],
+        thighRight: row[8],
+        thighLeft: row[9],
+        whr: row[10],
+        memo: String(row[11] || ""),
+      }, row[2]);
+    })
+    .filter(Boolean);
+}
+
+function appendMeasurementRow_(record) {
+  ensureMeasurementsSheet_().appendRow(buildMeasurementRowValues_(record));
+}
+
+function writeMeasurementRow_(rowIndex, record) {
+  var sheet = ensureMeasurementsSheet_();
+  if (!sheet || !rowIndex) return;
+  sheet.getRange(rowIndex, 1, 1, MEASUREMENT_HEADERS.length).setValues([buildMeasurementRowValues_(record)]);
+}
+
+function findMeasurementRowIndex_(measurementId) {
+  return findRowIndexByColumn_(ensureMeasurementsSheet_(), 3, measurementId);
+}
+
+function getMeasurementById_(measurementId) {
+  var list = readMeasurementRows_();
+  for (var i = 0; i < list.length; i += 1) {
+    if (list[i].id === measurementId) return list[i];
+  }
+  return null;
+}
+
+function decorateMeasurementWithCustomerProfile_(measurement, profiles) {
+  var profileMatch = findCustomerProfileByName_(profiles || {}, measurement && measurement.customerName, "");
+  var profile = profileMatch && profileMatch.profile
+    ? normalizeCustomerProfileRecord_(profileMatch.profile, profileMatch.key)
+    : null;
+  return Object.assign({}, measurement, {
+    memberNumber: normalizeMemberNumber_(measurement && measurement.memberNumber) ||
+      normalizeMemberNumber_(profile && profile.memberNumber),
+    target: publicMeasurementTargets_(profile && profile.measurementTargets),
+  });
+}
+
+function getMeasurements_(filter) {
+  ensureSpreadsheet_();
+  var profiles = getCustomerProfiles_();
+  return readMeasurementRows_()
+    .filter(function (measurement) {
+      return !filter || !filter.customerName || measurement.customerName === normalizeText_(filter.customerName);
+    })
+    .map(function (measurement) {
+      return decorateMeasurementWithCustomerProfile_(measurement, profiles);
+    })
+    .sort(function (a, b) {
+      var measuredDiff = new Date(b.measuredAt).getTime() - new Date(a.measuredAt).getTime();
+      if (measuredDiff !== 0) return measuredDiff;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+}
+
+function touchCustomerProfileUpdatedAt_(customerName) {
+  var name = normalizeText_(customerName);
+  if (!name) return null;
+  var profiles = getCustomerProfiles_();
+  var match = findCustomerProfileByName_(profiles, name, "");
+  if (!match) return null;
+  var record = normalizeCustomerProfileRecord_(match.profile, match.key);
+  if (!record) return null;
+  record.updatedAt = new Date().toISOString();
+  var saved = saveCustomerProfileRecord_(profiles, match.key, record, {
+    replaceActiveTicketCard: true,
+    replaceMeasurementTargets: true,
+  });
+  saveCustomerProfiles_(profiles);
+  return saved;
+}
+
+function renameMeasurementsForCustomer_(currentName, nextName, memberNumber) {
+  var fromName = normalizeText_(currentName);
+  var toName = normalizeText_(nextName);
+  if (!fromName || !toName) return 0;
+  var normalizedMemberNumber = normalizeMemberNumber_(memberNumber);
+  var rows = readMeasurementRows_();
+  var updated = 0;
+  rows.forEach(function (measurement) {
+    if (measurement.customerName !== fromName) return;
+    measurement.customerName = toName;
+    if (normalizedMemberNumber) {
+      measurement.memberNumber = normalizedMemberNumber;
+    }
+    measurement.updatedAt = new Date().toISOString();
+    writeMeasurementRow_(findMeasurementRowIndex_(measurement.id), measurement);
+    updated += 1;
+  });
+  if (updated) touchCustomerProfileUpdatedAt_(toName);
+  return updated;
+}
+
+function syncMeasurementMemberNumberForCustomer_(customerName, memberNumber) {
+  var name = normalizeText_(customerName);
+  var normalizedMemberNumber = normalizeMemberNumber_(memberNumber);
+  if (!name || !normalizedMemberNumber) return 0;
+  var rows = readMeasurementRows_();
+  var updated = 0;
+  rows.forEach(function (measurement) {
+    if (measurement.customerName !== name) return;
+    if (normalizeMemberNumber_(measurement.memberNumber) === normalizedMemberNumber) return;
+    measurement.memberNumber = normalizedMemberNumber;
+    measurement.updatedAt = new Date().toISOString();
+    writeMeasurementRow_(findMeasurementRowIndex_(measurement.id), measurement);
+    updated += 1;
+  });
+  if (updated) touchCustomerProfileUpdatedAt_(name);
+  return updated;
+}
+
+function deleteMeasurementsByCustomer_(customerName) {
+  var name = normalizeText_(customerName);
+  if (!name) return 0;
+  var sheet = ensureMeasurementsSheet_();
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  var rows = readMeasurementRows_();
+  var deleted = 0;
+  for (var i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i].customerName !== name) continue;
+    var rowIndex = findMeasurementRowIndex_(rows[i].id);
+    if (!rowIndex) continue;
+    sheet.deleteRow(rowIndex);
+    deleted += 1;
+  }
+  return deleted;
+}
+
+function createMeasurement_(customerName, payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var normalizedCustomerName = normalizeText_(customerName || payload && payload.customerName);
+    if (!normalizedCustomerName) throw new Error("顧客名が必要です。");
+    var profiles = getCustomerProfiles_();
+    var profileMatch = findCustomerProfileByName_(profiles, normalizedCustomerName, "");
+    var profile = profileMatch && profileMatch.profile
+      ? normalizeCustomerProfileRecord_(profileMatch.profile, profileMatch.key)
+      : null;
+    var responses = getResponses_({ includeTrashed: true }).filter(function (response) {
+      return normalizeText_(response.customerName) === normalizedCustomerName;
+    });
+    if (!profile && !responses.length) throw new Error("顧客が見つかりません。");
+
+    var record = normalizeMeasurementRecord_({
+      id: normalizeText_(payload && payload.id) || Utilities.getUuid(),
+      customerName: profile && profile.name || normalizedCustomerName,
+      memberNumber: normalizeMemberNumber_(payload && payload.memberNumber) ||
+        normalizeMemberNumber_(profile && profile.memberNumber),
+      measuredAt: payload && payload.measuredAt,
+      waist: payload && payload.waist,
+      hip: payload && payload.hip,
+      thighRight: payload && payload.thighRight,
+      thighLeft: payload && payload.thighLeft,
+      memo: payload && payload.memo,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    if (!record) throw new Error("測定日と顧客情報を確認してください。");
+    if (!hasMeasurementValues_(record)) throw new Error("測定値を1つ以上入力してください。");
+    appendMeasurementRow_(record);
+    touchCustomerProfileUpdatedAt_(record.customerName);
+    appendAuditLog_("measurement.create", {
+      measurementId: record.id,
+      customerName: record.customerName,
+      measuredAt: record.measuredAt,
+    });
+    return decorateMeasurementWithCustomerProfile_(record, getCustomerProfiles_());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updateMeasurement_(measurementId, payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var existing = getMeasurementById_(measurementId);
+    if (!existing) throw new Error("測定データが見つかりません。");
+    var profileMatch = findCustomerProfileByName_(getCustomerProfiles_(), existing.customerName, "");
+    var profile = profileMatch && profileMatch.profile
+      ? normalizeCustomerProfileRecord_(profileMatch.profile, profileMatch.key)
+      : null;
+    var updated = normalizeMeasurementRecord_({
+      id: existing.id,
+      customerName: existing.customerName,
+      memberNumber: normalizeMemberNumber_(payload && payload.memberNumber) ||
+        normalizeMemberNumber_(profile && profile.memberNumber) ||
+        existing.memberNumber,
+      measuredAt: payload && payload.measuredAt || existing.measuredAt,
+      waist: Object.prototype.hasOwnProperty.call(payload || {}, "waist") ? payload.waist : existing.waist,
+      hip: Object.prototype.hasOwnProperty.call(payload || {}, "hip") ? payload.hip : existing.hip,
+      thighRight: Object.prototype.hasOwnProperty.call(payload || {}, "thighRight") ? payload.thighRight : existing.thighRight,
+      thighLeft: Object.prototype.hasOwnProperty.call(payload || {}, "thighLeft") ? payload.thighLeft : existing.thighLeft,
+      memo: Object.prototype.hasOwnProperty.call(payload || {}, "memo") ? payload.memo : existing.memo,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!updated) throw new Error("測定データを更新できませんでした。");
+    if (!hasMeasurementValues_(updated)) throw new Error("測定値を1つ以上入力してください。");
+    writeMeasurementRow_(findMeasurementRowIndex_(measurementId), updated);
+    touchCustomerProfileUpdatedAt_(updated.customerName);
+    appendAuditLog_("measurement.update", {
+      measurementId: updated.id,
+      customerName: updated.customerName,
+      measuredAt: updated.measuredAt,
+    });
+    return decorateMeasurementWithCustomerProfile_(updated, getCustomerProfiles_());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function deleteMeasurement_(measurementId) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var existing = getMeasurementById_(measurementId);
+    if (!existing) throw new Error("測定データが見つかりません。");
+    var rowIndex = findMeasurementRowIndex_(measurementId);
+    if (!rowIndex) throw new Error("測定データが見つかりません。");
+    ensureMeasurementsSheet_().deleteRow(rowIndex);
+    touchCustomerProfileUpdatedAt_(existing.customerName);
+    appendAuditLog_("measurement.delete", {
+      measurementId: existing.id,
+      customerName: existing.customerName,
+    });
+    return { ok: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function replaceMeasurements_(measurements) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    ensureSpreadsheet_();
+    var sheet = ensureMeasurementsSheet_();
+    if (sheet.getLastRow() > 1) {
+      sheet.deleteRows(2, sheet.getLastRow() - 1);
+    }
+    var normalized = (Array.isArray(measurements) ? measurements : [])
+      .map(function (measurement) {
+        return normalizeMeasurementRecord_({
+          id: measurement && measurement.id,
+          customerName: measurement && measurement.customerName,
+          memberNumber: measurement && measurement.memberNumber,
+          measuredAt: measurement && measurement.measuredAt,
+          waist: measurement && measurement.waist,
+          hip: measurement && measurement.hip,
+          thighRight: measurement && measurement.thighRight,
+          thighLeft: measurement && measurement.thighLeft,
+          memo: measurement && measurement.memo,
+          createdAt: measurement && measurement.createdAt,
+          updatedAt: measurement && measurement.updatedAt,
+        }, measurement && measurement.id);
+      })
+      .filter(Boolean);
+    if (normalized.length) {
+      sheet.getRange(2, 1, normalized.length, MEASUREMENT_HEADERS.length).setValues(
+        normalized.map(buildMeasurementRowValues_)
+      );
+    }
+    appendAuditLog_("measurement.replace", {
+      count: normalized.length,
+    });
+    return getMeasurements_({});
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function decorateResponseWithCustomerProfile_(response, profiles) {
   var profileMatch = findCustomerProfileByClientId_(profiles || {}, response && response.customerClientId) ||
     findCustomerProfileByName_(profiles || {}, response && response.customerName, "");
@@ -2491,6 +2944,10 @@ function updateCustomerProfile_(customerName, payload) {
     var ticketPlan = normalizeText_(payload && payload.ticketPlan);
     var ticketSheet = normalizeText_(payload && payload.ticketSheet);
     var ticketRound = normalizeText_(payload && payload.ticketRound);
+    var shouldReplaceMeasurementTargets = Boolean(
+      payload && Object.prototype.hasOwnProperty.call(payload, "measurementTargets")
+    );
+    var measurementTargets = normalizeMeasurementTargets_(payload && payload.measurementTargets);
     if (!currentName) throw new Error("顧客名が必要です。");
     if (!nextName) throw new Error("お名前を入力してください。");
 
@@ -2546,7 +3003,16 @@ function updateCustomerProfile_(customerName, payload) {
     } else if (profileMatch && profileMatch.profile && profileMatch.profile.activeTicketCard) {
       profileUpdateOptions.activeTicketCard = normalizeActiveTicketCard_(profileMatch.profile.activeTicketCard);
     }
-    updateAdminCustomerProfileRecord_(currentName, nextName, responses, profileUpdateOptions);
+    if (shouldReplaceMeasurementTargets) {
+      profileUpdateOptions.measurementTargets = measurementTargets;
+    }
+    var savedProfile = updateAdminCustomerProfileRecord_(currentName, nextName, responses, profileUpdateOptions);
+    var updatedMeasurements = 0;
+    if (savedProfile && currentName !== nextName) {
+      updatedMeasurements = renameMeasurementsForCustomer_(currentName, savedProfile.name, savedProfile.memberNumber);
+    } else if (savedProfile && savedProfile.memberNumber) {
+      updatedMeasurements = syncMeasurementMemberNumberForCustomer_(savedProfile.name, savedProfile.memberNumber);
+    }
 
     appendAuditLog_("customer.profile.update", {
       customerName: currentName,
@@ -2554,8 +3020,14 @@ function updateCustomerProfile_(customerName, payload) {
       updatedResponses: responses.length,
       ticketUpdated: shouldUpdateTicket,
       memberNumber: memberNumber,
+      measurementTargetsUpdated: shouldReplaceMeasurementTargets,
+      updatedMeasurements: updatedMeasurements,
     });
-    return { ok: true, customerName: nextName };
+    return {
+      ok: true,
+      customerName: nextName,
+      customerProfile: publicCustomerProfile_(savedProfile),
+    };
   } finally {
     lock.releaseLock();
   }
@@ -2578,6 +3050,7 @@ function deleteCustomerProfile_(customerName) {
     responses.forEach(function (response) {
       purgeResponse_(response.id);
     });
+    var deletedMeasurements = deleteMeasurementsByCustomer_(name);
     deleteCustomerMemo_(name);
     deleteCustomerProfileRecord_(name);
     trashCustomerPhotoFolder_(name);
@@ -2585,6 +3058,7 @@ function deleteCustomerProfile_(customerName) {
     appendAuditLog_("customer.profile.delete", {
       customerName: name,
       deletedResponses: responses.length,
+      deletedMeasurements: deletedMeasurements,
     });
     return { ok: true };
   } finally {
@@ -2749,6 +3223,7 @@ function findRowIndexByColumn_(sheet, column, value) {
 function ensureSpreadsheet_() {
   var spreadsheet = getSpreadsheet_();
   ensureSheet_(spreadsheet, MASTER_SHEET_NAME, MASTER_HEADERS);
+  ensureMeasurementsSheet_();
   getSurveys_().forEach(ensureSurveySheet_);
 }
 
