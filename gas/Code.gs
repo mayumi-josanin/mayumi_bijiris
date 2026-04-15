@@ -4,6 +4,8 @@ var MASTER_SHEET_NAME = "回答一覧";
 var ROOT_DRIVE_FOLDER_NAME = "Bijiris";
 var LEGACY_ROOT_DRIVE_FOLDER_NAMES = ["bijiris"];
 var BIJIRIS_POSTS_FOLDER_NAME = "ビジリス通信";
+var DEFAULT_CUSTOMER_APP_URL = "https://mayumi-josanin.github.io/mayumi_bijiris/customer-app/";
+var DEFAULT_ONESIGNAL_APP_ID = "5f6e01a9-64ac-4cf6-9ea6-438a721d55fb";
 var DEFAULT_ADMIN_USERNAME = "mayumi2026";
 var DEFAULT_ADMIN_PASSWORD = "3939";
 var LEGACY_ADMIN_USERNAME = "admin";
@@ -28,7 +30,7 @@ var MAINTENANCE_TRIGGER_IDS_PROPERTY_KEY = "MAINTENANCE_TRIGGER_IDS_JSON";
 var NEXT_MEMBER_NUMBER_PROPERTY_KEY = "NEXT_MEMBER_NUMBER";
 var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
 var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
-var VERSION = "20260414-14";
+var VERSION = "20260415-03";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -344,6 +346,7 @@ function handleGet_(e) {
       dataPolicyText: getPreferences_().dataPolicyText,
       requireConsent: getPreferences_().requireConsent,
       consentText: getPreferences_().consentText,
+      pushAppId: getPushAppId_(),
       version: VERSION,
     };
   }
@@ -2944,6 +2947,7 @@ function createBijirisPost_(payload) {
     }
     var posts = getBijirisPosts_({ includeDrafts: true }).concat([record]);
     rewriteBijirisPostsSheets_(posts);
+    notifyBijirisPostIfNeeded_(record, payload, "create");
     appendAuditLog_("bijiris_post.create", {
       postId: record.id,
       title: record.title,
@@ -3000,6 +3004,7 @@ function updateBijirisPost_(postId, payload) {
         return post.id === updated.id ? updated : post;
       })
     );
+    notifyBijirisPostIfNeeded_(updated, payload, "update");
     appendAuditLog_("bijiris_post.update", {
       postId: updated.id,
       title: updated.title,
@@ -3887,6 +3892,8 @@ function getAdminInfo_() {
     adminUsername: credentials.username,
     adminUsers: getAdminUsers_().map(publicAdminUser_),
     ownerEmail: getOwnerEmail_(),
+    pushAppId: getPushAppId_(),
+    pushConfigured: isPushNotificationConfigured_(),
     spreadsheetId: spreadsheet.getId(),
     spreadsheetUrl: spreadsheet.getUrl(),
     masterSheetName: MASTER_SHEET_NAME,
@@ -4041,6 +4048,86 @@ function getOwnerEmail_() {
 
 function getConfig_(key, fallback) {
   return PropertiesService.getScriptProperties().getProperty(key) || fallback;
+}
+
+function getPushAppId_() {
+  return normalizeText_(getConfig_("ONESIGNAL_APP_ID", DEFAULT_ONESIGNAL_APP_ID));
+}
+
+function getPushRestApiKey_() {
+  return normalizeText_(getConfig_("ONESIGNAL_REST_API_KEY", ""));
+}
+
+function isPushNotificationConfigured_() {
+  return Boolean(getPushAppId_() && getPushRestApiKey_());
+}
+
+function getCustomerAppUrl_() {
+  return normalizeText_(getConfig_("CUSTOMER_APP_URL", DEFAULT_CUSTOMER_APP_URL)) || DEFAULT_CUSTOMER_APP_URL;
+}
+
+function buildBijirisNotificationUrl_(post) {
+  var base = getCustomerAppUrl_();
+  var separator = base.indexOf("?") >= 0 ? "&" : "?";
+  return base + separator + "page=bijiris&postId=" + encodeURIComponent(normalizeText_(post && post.id));
+}
+
+function buildBijirisNotificationPayload_(post, payload, mode) {
+  var title = normalizeText_(payload && payload.notificationTitle) || (mode === "update" ? "豆知識を更新しました" : "新しい豆知識を追加しました");
+  var body = normalizeText_(payload && payload.notificationBody) || normalizeText_(post && post.summary) || normalizeText_(post && post.title) || "新しい豆知識があります。";
+  return {
+    app_id: getPushAppId_(),
+    included_segments: ["Subscribed Users"],
+    headings: { en: title, ja: title },
+    contents: { en: body, ja: body },
+    url: buildBijirisNotificationUrl_(post),
+    data: {
+      page: "bijiris",
+      postId: normalizeText_(post && post.id),
+    },
+    ios_badgeType: "Increase",
+    ios_badgeCount: 1,
+  };
+}
+
+function sendBijirisPushNotification_(post, payload, mode) {
+  if (!isPushNotificationConfigured_()) return false;
+  var response = UrlFetchApp.fetch("https://onesignal.com/api/v1/notifications", {
+    method: "post",
+    contentType: "application/json",
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: "Basic " + getPushRestApiKey_(),
+    },
+    payload: JSON.stringify(buildBijirisNotificationPayload_(post, payload, mode)),
+  });
+  var code = response.getResponseCode();
+  if (code !== 200) {
+    throw new Error("OneSignal送信失敗: " + response.getContentText());
+  }
+  return true;
+}
+
+function notifyBijirisPostIfNeeded_(post, payload, mode) {
+  if (!(post && normalizeText_(post.status) === "published" && payload && payload.notifyCustomers === true)) {
+    return;
+  }
+  try {
+    var sent = sendBijirisPushNotification_(post, payload, mode);
+    appendAuditLog_("bijiris_post.notify", {
+      postId: post.id,
+      title: post.title,
+      mode: mode,
+      sent: sent === true,
+    });
+  } catch (error) {
+    appendAuditLog_("bijiris_post.notify_error", {
+      postId: post && post.id,
+      title: post && post.title,
+      mode: mode,
+      error: error && error.message ? error.message : String(error),
+    });
+  }
 }
 
 function normalizeText_(value) {
