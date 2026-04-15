@@ -409,6 +409,9 @@ function handlePost_(body) {
   if (body.action === "updatePublicTicketCard") {
     return updatePublicTicketCard_(body);
   }
+  if (body.action === "updatePublicPushStatus") {
+    return updatePublicPushStatus_(body);
+  }
   if (body.action === "updatePublicResponse") {
     return updatePublicResponse_(body);
   }
@@ -1390,6 +1393,40 @@ function normalizeMeasurementTargets_(value) {
   return hasAny ? targets : null;
 }
 
+function normalizePushPermission_(value) {
+  var normalized = normalizeText_(value).toLowerCase();
+  if (["granted", "denied", "default", "unsupported"].indexOf(normalized) >= 0) {
+    return normalized;
+  }
+  return "";
+}
+
+function normalizePushStatus_(value) {
+  if (!value || typeof value !== "object") return null;
+  var hasEnabled = Object.prototype.hasOwnProperty.call(value, "enabled");
+  var hasSupported = Object.prototype.hasOwnProperty.call(value, "supported");
+  var permission = normalizePushPermission_(value.permission);
+  var hasPermission = Boolean(permission);
+  if (!hasEnabled && !hasSupported && !hasPermission) return null;
+  return {
+    enabled: value.enabled === true,
+    supported: value.supported === true,
+    permission: permission || (value.supported === false ? "unsupported" : ""),
+    updatedAt: normalizeText_(value.updatedAt) || new Date().toISOString(),
+  };
+}
+
+function publicPushStatus_(value) {
+  var normalized = normalizePushStatus_(value);
+  if (!normalized) return null;
+  return {
+    enabled: normalized.enabled,
+    supported: normalized.supported,
+    permission: normalized.permission,
+    updatedAt: normalized.updatedAt,
+  };
+}
+
 function publicMeasurementTargets_(value) {
   var normalized = normalizeMeasurementTargets_(value);
   if (!normalized) return null;
@@ -1424,6 +1461,7 @@ function normalizeCustomerProfileRecord_(record, fallbackName) {
     clientIds: clientIds,
     activeTicketCard: normalizeActiveTicketCard_(record && record.activeTicketCard),
     measurementTargets: normalizeMeasurementTargets_(record && record.measurementTargets),
+    pushStatus: normalizePushStatus_(record && record.pushStatus),
     adminManaged: record && record.adminManaged === true,
     updatedAt: normalizeText_(record && record.updatedAt) || new Date().toISOString(),
   };
@@ -1460,6 +1498,7 @@ function publicCustomerProfile_(record) {
     nameKana: normalizeKana_(record.nameKana),
     activeTicketCard: publicActiveTicketCard_(record.activeTicketCard),
     measurementTargets: publicMeasurementTargets_(record.measurementTargets),
+    pushStatus: publicPushStatus_(record.pushStatus),
     updatedAt: normalizeText_(record.updatedAt),
   };
 }
@@ -1549,8 +1588,10 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
   if (!normalized) return null;
   var replaceActiveTicketCard = options && options.replaceActiveTicketCard === true;
   var replaceMeasurementTargets = options && options.replaceMeasurementTargets === true;
+  var replacePushStatus = options && options.replacePushStatus === true;
   var requestedActiveTicketCard = normalizeActiveTicketCard_(record && record.activeTicketCard);
   var requestedMeasurementTargets = normalizeMeasurementTargets_(record && record.measurementTargets);
+  var requestedPushStatus = normalizePushStatus_(record && record.pushStatus);
   if (previousKey && previousKey !== normalized.name) {
     delete profiles[previousKey];
   }
@@ -1581,6 +1622,13 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
     normalized.measurementTargets = requestedMeasurementTargets;
   } else if (existing && existing.measurementTargets) {
     normalized.measurementTargets = normalizeMeasurementTargets_(existing.measurementTargets);
+  }
+  if (replacePushStatus) {
+    normalized.pushStatus = requestedPushStatus;
+  } else if (requestedPushStatus) {
+    normalized.pushStatus = requestedPushStatus;
+  } else if (existing && existing.pushStatus) {
+    normalized.pushStatus = normalizePushStatus_(existing.pushStatus);
   }
   if (!normalized.memberNumber) {
     var nextIndex = Math.max(getStoredNextMemberNumberIndex_(), getHighestMemberNumberIndex_(profiles) + 1, 1);
@@ -1794,6 +1842,29 @@ function syncCustomerProfileTicketCard_(customer, clientId, activeTicketCard) {
 
   var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
     replaceActiveTicketCard: true,
+  });
+  saveCustomerProfiles_(profiles);
+  return saved;
+}
+
+function syncCustomerProfilePushStatus_(customer, clientId, pushStatus) {
+  var normalizedPushStatus = normalizePushStatus_(pushStatus);
+  if (!normalizedPushStatus) return null;
+  var profile = resolveCustomerProfileForSubmission_(customer, clientId);
+  if (!profile) return null;
+
+  var profiles = getCustomerProfiles_();
+  var match = findCustomerProfileByClientId_(profiles, normalizeText_(clientId)) ||
+    findCustomerProfileByName_(profiles, profile.name, profile.nameKana);
+  var record = match
+    ? normalizeCustomerProfileRecord_(match.profile, match.key)
+    : normalizeCustomerProfileRecord_(profile, profile && profile.name);
+  if (!record) return null;
+
+  record.pushStatus = normalizedPushStatus;
+  record.updatedAt = new Date().toISOString();
+  var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
+    replacePushStatus: true,
   });
   saveCustomerProfiles_(profiles);
   return saved;
@@ -2225,6 +2296,30 @@ function updatePublicTicketCard_(body) {
       ticketPlan: saved.activeTicketCard && saved.activeTicketCard.plan || "",
       ticketSheet: saved.activeTicketCard ? saved.activeTicketCard.sheetNumber + "枚目" : "",
       ticketRound: saved.activeTicketCard ? saved.activeTicketCard.round + "回目" : "",
+    });
+    return {
+      ok: true,
+      customerProfile: publicCustomerProfile_(saved),
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function updatePublicPushStatus_(body) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var customer = body.customer || body.payload && body.payload.customer || {};
+    var clientId = body.clientId || body.payload && body.payload.clientId || "";
+    var pushStatus = body.pushStatus || body.payload && body.payload.pushStatus || {};
+    var saved = syncCustomerProfilePushStatus_(customer, clientId, pushStatus);
+    if (!saved) throw new Error("通知設定を保存できませんでした。");
+    appendAuditLog_("customer.push.public_update", {
+      customerName: saved.name,
+      enabled: saved.pushStatus && saved.pushStatus.enabled === true,
+      supported: saved.pushStatus && saved.pushStatus.supported === true,
+      permission: saved.pushStatus && saved.pushStatus.permission || "",
     });
     return {
       ok: true,
