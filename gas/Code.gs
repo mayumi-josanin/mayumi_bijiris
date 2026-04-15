@@ -455,6 +455,12 @@ function handlePost_(body) {
       preferences: updatePreferences_(body.payload || {}),
     };
   }
+  if (body.action === "adminUpdatePushConfig") {
+    requireAdmin_(body.token);
+    return {
+      adminInfo: updatePushConfig_(body.payload || {}, { source: "admin" }),
+    };
+  }
   if (body.action === "adminUpdateCustomerMemo") {
     requireAdmin_(body.token);
     return {
@@ -914,6 +920,39 @@ function updatePreferences_(payload) {
     twoFactorEnabled: false,
   });
   return next;
+}
+
+function updatePushConfig_(payload, options) {
+  var properties = PropertiesService.getScriptProperties();
+  var nextPushAppId = normalizeText_(payload && payload.pushAppId) || getPushAppId_();
+  var nextCustomerAppUrl = normalizeText_(payload && payload.customerAppUrl) || getCustomerAppUrl_();
+  var nextRestApiKey = normalizeText_(payload && payload.restApiKey);
+  var source = normalizeText_(options && options.source) || "unknown";
+
+  if (!nextPushAppId) {
+    throw new Error("OneSignal App ID を入力してください。");
+  }
+  if (!nextCustomerAppUrl) {
+    throw new Error("顧客アプリURLを入力してください。");
+  }
+  if (!/^https?:\/\//i.test(nextCustomerAppUrl)) {
+    throw new Error("顧客アプリURLは http または https で始まるURLを入力してください。");
+  }
+
+  properties.setProperty("ONESIGNAL_APP_ID", nextPushAppId);
+  properties.setProperty("CUSTOMER_APP_URL", nextCustomerAppUrl);
+  if (nextRestApiKey) {
+    properties.setProperty("ONESIGNAL_REST_API_KEY", nextRestApiKey);
+  }
+
+  appendAuditLog_("push.config.update", {
+    source: source,
+    pushAppId: nextPushAppId,
+    customerAppUrl: nextCustomerAppUrl,
+    restApiKeyUpdated: !!nextRestApiKey,
+    pushConfigured: isPushNotificationConfigured_(),
+  });
+  return getAdminInfo_();
 }
 
 function DEFAULT_DATA_POLICY_TEXT_() {
@@ -4065,6 +4104,17 @@ function isPushNotificationConfigured_() {
 
 function getCustomerAppUrl_() {
   return normalizeText_(getConfig_("CUSTOMER_APP_URL", DEFAULT_CUSTOMER_APP_URL)) || DEFAULT_CUSTOMER_APP_URL;
+}
+
+function configurePushNotifications(pushAppId, restApiKey, customerAppUrl) {
+  return updatePushConfig_(
+    {
+      pushAppId: pushAppId,
+      restApiKey: restApiKey,
+      customerAppUrl: customerAppUrl,
+    },
+    { source: "clasp" }
+  );
 }
 
 function buildBijirisNotificationUrl_(post) {
