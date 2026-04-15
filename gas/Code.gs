@@ -3894,6 +3894,7 @@ function getAdminInfo_() {
     ownerEmail: getOwnerEmail_(),
     pushAppId: getPushAppId_(),
     pushConfigured: isPushNotificationConfigured_(),
+    customerAppUrl: getCustomerAppUrl_(),
     spreadsheetId: spreadsheet.getId(),
     spreadsheetUrl: spreadsheet.getUrl(),
     masterSheetName: MASTER_SHEET_NAME,
