@@ -5,7 +5,9 @@ var ROOT_DRIVE_FOLDER_NAME = "Bijiris";
 var LEGACY_ROOT_DRIVE_FOLDER_NAMES = ["bijiris"];
 var BIJIRIS_POSTS_FOLDER_NAME = "ビジリス通信";
 var DEFAULT_CUSTOMER_APP_URL = "https://mayumi-josanin.github.io/mayumi_bijiris/customer-app/";
-var DEFAULT_ONESIGNAL_APP_ID = "5f6e01a9-64ac-4cf6-9ea6-438a721d55fb";
+var DEFAULT_ONESIGNAL_APP_ID = "88023099-c99e-44c6-9f7c-2ef08d363768";
+var ONE_SIGNAL_APP_SCOPE_KEY = "app_scope";
+var ONE_SIGNAL_APP_SCOPE_VALUE = "mayumi_bijiris";
 var DEFAULT_ADMIN_USERNAME = "mayumi2026";
 var DEFAULT_ADMIN_PASSWORD = "3939";
 var LEGACY_ADMIN_USERNAME = "admin";
@@ -4318,7 +4320,9 @@ function buildBijirisNotificationPayload_(post, payload, mode) {
   var body = normalizeText_(payload && payload.notificationBody) || normalizeText_(post && post.summary) || normalizeText_(post && post.title) || "新しい豆知識があります。";
   return {
     app_id: getPushAppId_(),
-    included_segments: ["Subscribed Users"],
+    filters: [
+      { field: "tag", key: ONE_SIGNAL_APP_SCOPE_KEY, relation: "=", value: ONE_SIGNAL_APP_SCOPE_VALUE },
+    ],
     headings: { en: title, ja: title },
     contents: { en: body, ja: body },
     url: buildBijirisNotificationUrl_(post),
