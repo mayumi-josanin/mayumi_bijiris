@@ -3049,7 +3049,11 @@ function saveBijirisPostDocumentFiles_(files, postId) {
     var driveFile = folder.createFile(blob);
     driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     var fileId = driveFile.getId();
-    var coverMeta = saveBijirisPdfCoverFile_(file && file.thumbnailDataUrl, postId, fileName, "");
+    var coverDataUrl = normalizeText_(file && file.thumbnailDataUrl);
+    if (!coverDataUrl && /^data:image\//i.test(normalizeText_(file && file.thumbnailUrl))) {
+      coverDataUrl = normalizeText_(file && file.thumbnailUrl);
+    }
+    var coverMeta = saveBijirisPdfCoverFile_(coverDataUrl, postId, fileName, "");
     return {
       kind: "pdf",
       sortOrder: index,
@@ -3103,12 +3107,16 @@ function syncBijirisPostFiles_(existingFiles, nextFiles, postId, kind) {
       }
       var nextThumbnailUrl = existingFile.thumbnailUrl || "";
       var nextThumbnailFileId = existingFile.thumbnailFileId || "";
+      var nextThumbnailDataUrl = normalizeText_(file && file.thumbnailDataUrl);
+      if (!nextThumbnailDataUrl && /^data:image\//i.test(normalizeText_(file && file.thumbnailUrl))) {
+        nextThumbnailDataUrl = normalizeText_(file && file.thumbnailUrl);
+      }
       if (file && file.thumbnailRemoved === true) {
         var removedCoverMeta = saveBijirisPdfCoverFile_("", postId, nextName, existingFile.thumbnailFileId || "");
         nextThumbnailUrl = removedCoverMeta.thumbnailUrl;
         nextThumbnailFileId = removedCoverMeta.thumbnailFileId;
-      } else if (normalizeText_(file && file.thumbnailDataUrl)) {
-        var updatedCoverMeta = saveBijirisPdfCoverFile_(file.thumbnailDataUrl, postId, nextName, existingFile.thumbnailFileId || "");
+      } else if (nextThumbnailDataUrl) {
+        var updatedCoverMeta = saveBijirisPdfCoverFile_(nextThumbnailDataUrl, postId, nextName, existingFile.thumbnailFileId || "");
         nextThumbnailUrl = updatedCoverMeta.thumbnailUrl;
         nextThumbnailFileId = updatedCoverMeta.thumbnailFileId;
       } else if (normalizeText_(file && file.thumbnailUrl)) {
