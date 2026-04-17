@@ -889,6 +889,7 @@ function getPreferences_() {
     retentionDays: normalizeRetentionDays_(stored && stored.retentionDays),
     recoveryMemo: normalizeText_(stored && stored.recoveryMemo) || DEFAULT_RECOVERY_MEMO_(),
     twoFactorEnabled: false,
+    bijirisCategoryConfig: normalizeBijirisCategoryConfig_(stored && stored.bijirisCategoryConfig),
   };
   if (JSON.stringify(stored || {}) !== JSON.stringify(preferences)) {
     properties.setProperty(PREFERENCES_PROPERTY_KEY, JSON.stringify(preferences));
@@ -911,6 +912,9 @@ function updatePreferences_(payload) {
     retentionDays: normalizeRetentionDays_(payload && payload.retentionDays),
     recoveryMemo: normalizeText_(payload && payload.recoveryMemo) || current.recoveryMemo,
     twoFactorEnabled: false,
+    bijirisCategoryConfig: normalizeBijirisCategoryConfig_(
+      (payload && payload.bijirisCategoryConfig) || current.bijirisCategoryConfig
+    ),
   };
 
   if (next.notificationEnabled && !next.notificationEmail) {
@@ -987,6 +991,75 @@ function DEFAULT_CONSENT_TEXT_() {
 
 function DEFAULT_RECOVERY_MEMO_() {
   return "障害時は Apps Script の実行ログ、スプレッドシート、Google ドライブの保存フォルダを確認してください。";
+}
+
+function DEFAULT_BIJIRIS_GENERAL_CATEGORIES_() {
+  return ["豆知識", "アドバイス", "セルフケア", "お知らせ", "よくある質問"];
+}
+
+function DEFAULT_BIJIRIS_CONCERN_ROOT_LABEL_() {
+  return "お悩み";
+}
+
+function DEFAULT_BIJIRIS_CONCERN_PATHS_() {
+  return [
+    "女性 > 産後女性を含む骨盤底筋まわりのお悩み > 産後の骨盤底筋のゆるみ感が気になる",
+    "女性 > 産後女性を含む骨盤底筋まわりのお悩み > くしゃみ、咳、大笑いでヒヤッとする",
+    "女性 > 産後女性を含む骨盤底筋まわりのお悩み > 骨盤まわりを土台からケアしたい",
+    "女性 > トイレまわりのお悩み > 尿漏れが気になる",
+    "女性 > トイレまわりのお悩み > 頻尿が気になる",
+    "女性 > トイレまわりのお悩み > 急な尿意が気になる",
+    "女性 > トイレまわりのお悩み > 便秘がち",
+    "女性 > トイレまわりのお悩み > お通じのリズムが気になる",
+    "女性 > 体型・見た目のお悩み > 産後のぽっこりお腹が気になる",
+    "女性 > 体型・見た目のお悩み > 年齢とともに体型の変化が気になる",
+    "女性 > 体型・見た目のお悩み > 下半身太りが気になる",
+    "女性 > 体型・見た目のお悩み > ヒップの下垂が気になる",
+    "女性 > 姿勢・日常動作のお悩み > 産後に姿勢が崩れやすくなった",
+    "女性 > 姿勢・日常動作のお悩み > 抱っこや家事で下腹や骨盤まわりが気になる",
+    "女性 > 姿勢・日常動作のお悩み > 姿勢を整えたい",
+    "女性 > デリケートゾーンまわりのお悩み > デリケートゾーンのケアを意識したい",
+    "女性 > デリケートゾーンまわりのお悩み > 膣トレを始めてみたい",
+    "女性 > 冷え・巡りのお悩み > 冷えやすさが気になる",
+    "男性 > トイレまわりのお悩み > 頻尿が気になる",
+    "男性 > トイレまわりのお悩み > ちょい漏れが気になる",
+    "男性 > トイレまわりのお悩み > 急な尿意で不安がある",
+    "男性 > トイレまわりのお悩み > トイレ悩みをケアしたい",
+    "男性 > デリケートなお悩み > EDケアを意識したい",
+    "男性 > デリケートなお悩み > デリケートなお悩みを人知れずケアしたい",
+    "男性 > 姿勢・骨盤まわりのお悩み > 長時間の座り仕事で骨盤まわりが気になる",
+    "男性 > 姿勢・骨盤まわりのお悩み > 猫背や前かがみ姿勢が気になる",
+    "男性 > 姿勢・骨盤まわりのお悩み > 腰まわりの違和感が気になる",
+    "男性 > 下半身・体型のお悩み > 下半身の筋力低下が気になる",
+    "男性 > 下半身・体型のお悩み > ヒップラインの崩れが気になる",
+    "男性 > 下半身・体型のお悩み > むくみや冷えが気になる",
+    "男性 > 下半身・体型のお悩み > 運動不足が気になる",
+    "男性 > 下半身・体型のお悩み > 筋トレが続かない",
+  ];
+}
+
+function normalizeTextList_(values, fallback) {
+  var normalized = (Array.isArray(values) ? values : [])
+    .map(function (value) {
+      return normalizeText_(value);
+    })
+    .filter(function (value) {
+      return !!value;
+    });
+  return normalized.length ? normalized : (Array.isArray(fallback) ? fallback.slice() : []);
+}
+
+function normalizeBijirisCategoryConfig_(value) {
+  var defaults = {
+    generalCategories: DEFAULT_BIJIRIS_GENERAL_CATEGORIES_(),
+    concernRootLabel: DEFAULT_BIJIRIS_CONCERN_ROOT_LABEL_(),
+    concernPaths: DEFAULT_BIJIRIS_CONCERN_PATHS_(),
+  };
+  return {
+    generalCategories: normalizeTextList_(value && value.generalCategories, defaults.generalCategories),
+    concernRootLabel: normalizeText_(value && value.concernRootLabel) || defaults.concernRootLabel,
+    concernPaths: normalizeTextList_(value && value.concernPaths, defaults.concernPaths),
+  };
 }
 
 function normalizeBackupHour_(value) {
