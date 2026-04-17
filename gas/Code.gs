@@ -3001,7 +3001,7 @@ function saveBijirisPdfCoverFile_(dataUrl, postId, fileName, existingThumbnailFi
   driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
   var coverFileId = driveFile.getId();
   return {
-    thumbnailUrl: "https://drive.google.com/uc?export=view&id=" + coverFileId,
+    thumbnailUrl: "https://drive.google.com/thumbnail?id=" + coverFileId + "&sz=w1200",
     thumbnailFileId: coverFileId,
   };
 }
