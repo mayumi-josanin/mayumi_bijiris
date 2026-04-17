@@ -247,6 +247,8 @@ var BIJIRIS_POST_ATTACHMENT_HEADERS = [
   "プレビューURL",
   "ダウンロードURL",
   "サムネイルURL",
+  "表示タイトル",
+  "サムネイルファイルID",
 ];
 
 function getBijirisSessionConcernOptions_() {
@@ -2598,6 +2600,10 @@ function sanitizeFileName_(value) {
   return String(value).replace(/[\\/:*?"<>|#%{}]/g, "_").slice(0, 180);
 }
 
+function stripFileExtension_(value) {
+  return String(value || "").replace(/\.[^.]+$/, "");
+}
+
 function sanitizeFolderName_(value) {
   return normalizeText_(value).replace(/[\\/:*?"<>|#%{}]/g, "_").slice(0, 120);
 }
@@ -2717,12 +2723,14 @@ function normalizeBijirisPostAttachmentRecord_(record, kind, index) {
     kind: attachmentKind || "photo",
     sortOrder: Number(record && record.sortOrder || index || 0),
     name: name || ("添付" + String(Number(index || 0) + 1)),
+    title: normalizeText_(record && record.title) || (attachmentKind === "pdf" ? name.replace(/\.pdf$/i, "") : ""),
     type: normalizeText_(record && record.type),
     fileId: fileId,
     url: url,
     previewUrl: normalizeText_(record && record.previewUrl),
     downloadUrl: normalizeText_(record && record.downloadUrl),
     thumbnailUrl: normalizeText_(record && record.thumbnailUrl),
+    thumbnailFileId: normalizeText_(record && record.thumbnailFileId),
   };
 }
 
@@ -2791,6 +2799,8 @@ function buildBijirisPostAttachmentRowValues_(postId, file) {
     file.previewUrl || "",
     file.downloadUrl || "",
     file.thumbnailUrl || "",
+    file.title || "",
+    file.thumbnailFileId || "",
   ];
 }
 
@@ -2832,6 +2842,8 @@ function readBijirisPostAttachmentRows_() {
         previewUrl: String(row[7] || ""),
         downloadUrl: String(row[8] || ""),
         thumbnailUrl: String(row[9] || ""),
+        title: String(row[10] || ""),
+        thumbnailFileId: String(row[11] || ""),
       }, row[1], row[2]);
       if (!attachment) return null;
       attachment.postId = String(row[0] || "");
@@ -2948,14 +2960,50 @@ function getBijirisPostFolder_(postId) {
 
 function trashDriveFilesByRecords_(files) {
   (Array.isArray(files) ? files : []).forEach(function (file) {
-    var fileId = normalizeText_(file && file.fileId);
-    if (!fileId) return;
+    [normalizeText_(file && file.fileId), normalizeText_(file && file.thumbnailFileId)].forEach(function (fileId) {
+      if (!fileId) return;
+      try {
+        DriveApp.getFileById(fileId).setTrashed(true);
+      } catch (error) {
+        // Ignore already-deleted or inaccessible files.
+      }
+    });
+  });
+}
+
+function saveBijirisPdfCoverFile_(dataUrl, postId, fileName, existingThumbnailFileId) {
+  var normalizedDataUrl = String(dataUrl || "");
+  if (!normalizedDataUrl) {
+    if (existingThumbnailFileId) {
+      try {
+        DriveApp.getFileById(existingThumbnailFileId).setTrashed(true);
+      } catch (error) {
+        // Ignore already-deleted or inaccessible files.
+      }
+    }
+    return { thumbnailUrl: "", thumbnailFileId: "" };
+  }
+  var match = normalizedDataUrl.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,(.+)$/i);
+  if (!match) throw new Error("PDF 表紙画像の形式が正しくありません。");
+  if (existingThumbnailFileId) {
     try {
-      DriveApp.getFileById(fileId).setTrashed(true);
+      DriveApp.getFileById(existingThumbnailFileId).setTrashed(true);
     } catch (error) {
       // Ignore already-deleted or inaccessible files.
     }
-  });
+  }
+  var folder = getChildFolderByName_(getBijirisPostFolder_(postId), "pdf-covers");
+  var mimeType = match[1].replace("image/jpg", "image/jpeg");
+  var extension = mimeType.split("/")[1].replace("jpeg", "jpg");
+  var coverName = sanitizeFileName_(stripFileExtension_(fileName) + "_cover." + extension);
+  var blob = Utilities.newBlob(Utilities.base64Decode(match[2]), mimeType, coverName);
+  var driveFile = folder.createFile(blob);
+  driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var coverFileId = driveFile.getId();
+  return {
+    thumbnailUrl: "https://drive.google.com/uc?export=view&id=" + coverFileId,
+    thumbnailFileId: coverFileId,
+  };
 }
 
 function saveBijirisPostImageFiles_(files, postId) {
@@ -2996,20 +3044,24 @@ function saveBijirisPostDocumentFiles_(files, postId) {
     }
     var fileName = sanitizeFileName_(normalizeText_(file && file.name) || ("document_" + String(index + 1).padStart(2, "0") + ".pdf"));
     if (!/\.pdf$/i.test(fileName)) fileName += ".pdf";
+    var displayTitle = normalizeText_(file && file.title) || stripFileExtension_(fileName);
     var blob = Utilities.newBlob(Utilities.base64Decode(base64Data), MimeType.PDF, fileName);
     var driveFile = folder.createFile(blob);
     driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     var fileId = driveFile.getId();
+    var coverMeta = saveBijirisPdfCoverFile_(file && file.thumbnailDataUrl, postId, fileName, "");
     return {
       kind: "pdf",
       sortOrder: index,
       name: fileName,
+      title: displayTitle,
       type: MimeType.PDF,
       fileId: fileId,
       url: driveFile.getUrl(),
       previewUrl: "https://drive.google.com/file/d/" + fileId + "/preview",
       downloadUrl: "https://drive.google.com/uc?export=download&id=" + fileId,
-      thumbnailUrl: "",
+      thumbnailUrl: coverMeta.thumbnailUrl,
+      thumbnailFileId: coverMeta.thumbnailFileId,
     };
   });
 }
@@ -3035,6 +3087,41 @@ function syncBijirisPostFiles_(existingFiles, nextFiles, postId, kind) {
     }
     if (!fileId || !existingById[fileId] || keptIds[fileId]) return;
     keptIds[fileId] = true;
+    if (kind === "pdf") {
+      var existingFile = existingById[fileId];
+      var nextTitle = normalizeText_(file && file.title) || existingFile.title || stripFileExtension_(existingFile.name);
+      var nextName = existingFile.name || file.name || "";
+      if (nextTitle && (!existingFile.title || existingFile.title !== nextTitle)) {
+        try {
+          var nextDriveName = sanitizeFileName_(nextTitle);
+          if (!/\.pdf$/i.test(nextDriveName)) nextDriveName += ".pdf";
+          DriveApp.getFileById(fileId).setName(nextDriveName);
+          nextName = nextDriveName;
+        } catch (error) {
+          // Ignore rename failures and keep current name.
+        }
+      }
+      var nextThumbnailUrl = existingFile.thumbnailUrl || "";
+      var nextThumbnailFileId = existingFile.thumbnailFileId || "";
+      if (file && file.thumbnailRemoved === true) {
+        var removedCoverMeta = saveBijirisPdfCoverFile_("", postId, nextName, existingFile.thumbnailFileId || "");
+        nextThumbnailUrl = removedCoverMeta.thumbnailUrl;
+        nextThumbnailFileId = removedCoverMeta.thumbnailFileId;
+      } else if (normalizeText_(file && file.thumbnailDataUrl)) {
+        var updatedCoverMeta = saveBijirisPdfCoverFile_(file.thumbnailDataUrl, postId, nextName, existingFile.thumbnailFileId || "");
+        nextThumbnailUrl = updatedCoverMeta.thumbnailUrl;
+        nextThumbnailFileId = updatedCoverMeta.thumbnailFileId;
+      } else if (normalizeText_(file && file.thumbnailUrl)) {
+        nextThumbnailUrl = normalizeText_(file && file.thumbnailUrl);
+      }
+      keptFiles.push(Object.assign({}, existingFile, {
+        name: nextName,
+        title: nextTitle,
+        thumbnailUrl: nextThumbnailUrl,
+        thumbnailFileId: nextThumbnailFileId,
+      }));
+      return;
+    }
     keptFiles.push(existingById[fileId]);
   });
 
