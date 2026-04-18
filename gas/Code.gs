@@ -34,6 +34,7 @@ var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
 var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
 var VERSION = "20260415-03";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+var TICKET_CARD_ACQUIRE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
 var LOGIN_MAX_ATTEMPTS = 5;
@@ -1520,6 +1521,13 @@ function normalizeActiveTicketCardSource_(value) {
   return ["admin", "response", "customer"].indexOf(normalized) >= 0 ? normalized : "";
 }
 
+function normalizeTicketCardAcquiredAt_(value) {
+  var normalized = normalizeText_(value);
+  if (!normalized) return "";
+  var parsed = new Date(normalized);
+  return isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
 function normalizeCustomerProfileRecord_(record, fallbackName) {
   var name = normalizeText_(record && record.name || fallbackName);
   if (!name) return null;
@@ -1544,6 +1552,9 @@ function normalizeCustomerProfileRecord_(record, fallbackName) {
     activeTicketCard: normalizeActiveTicketCard_(record && record.activeTicketCard),
     activeTicketCardSource: normalizeActiveTicketCardSource_(
       record && (record.activeTicketCardSource || record.ticketCardSource)
+    ),
+    lastTicketCardAcquiredAt: normalizeTicketCardAcquiredAt_(
+      record && (record.lastTicketCardAcquiredAt || record.ticketCardLastAcquiredAt)
     ),
     measurementTargets: normalizeMeasurementTargets_(record && record.measurementTargets),
     pushStatus: normalizePushStatus_(record && record.pushStatus),
@@ -1583,6 +1594,7 @@ function publicCustomerProfile_(record) {
     nameKana: normalizeKana_(record.nameKana),
     activeTicketCard: publicActiveTicketCard_(record.activeTicketCard),
     activeTicketCardSource: normalizeActiveTicketCardSource_(record.activeTicketCardSource),
+    lastTicketCardAcquiredAt: normalizeTicketCardAcquiredAt_(record.lastTicketCardAcquiredAt),
     measurementTargets: publicMeasurementTargets_(record.measurementTargets),
     pushStatus: publicPushStatus_(record.pushStatus),
     updatedAt: normalizeText_(record.updatedAt),
@@ -1674,11 +1686,15 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
   if (!normalized) return null;
   var replaceActiveTicketCard = options && options.replaceActiveTicketCard === true;
   var replaceActiveTicketCardSource = options && options.replaceActiveTicketCardSource === true;
+  var replaceLastTicketCardAcquiredAt = options && options.replaceLastTicketCardAcquiredAt === true;
   var replaceMeasurementTargets = options && options.replaceMeasurementTargets === true;
   var replacePushStatus = options && options.replacePushStatus === true;
   var requestedActiveTicketCard = normalizeActiveTicketCard_(record && record.activeTicketCard);
   var requestedActiveTicketCardSource = normalizeActiveTicketCardSource_(
     record && (record.activeTicketCardSource || record.ticketCardSource)
+  );
+  var requestedLastTicketCardAcquiredAt = normalizeTicketCardAcquiredAt_(
+    record && (record.lastTicketCardAcquiredAt || record.ticketCardLastAcquiredAt)
   );
   var requestedMeasurementTargets = normalizeMeasurementTargets_(record && record.measurementTargets);
   var requestedPushStatus = normalizePushStatus_(record && record.pushStatus);
@@ -1712,6 +1728,13 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
     normalized.activeTicketCardSource = requestedActiveTicketCardSource;
   } else if (existing && existing.activeTicketCardSource) {
     normalized.activeTicketCardSource = normalizeActiveTicketCardSource_(existing.activeTicketCardSource);
+  }
+  if (replaceLastTicketCardAcquiredAt) {
+    normalized.lastTicketCardAcquiredAt = requestedLastTicketCardAcquiredAt;
+  } else if (requestedLastTicketCardAcquiredAt) {
+    normalized.lastTicketCardAcquiredAt = requestedLastTicketCardAcquiredAt;
+  } else if (existing && existing.lastTicketCardAcquiredAt) {
+    normalized.lastTicketCardAcquiredAt = normalizeTicketCardAcquiredAt_(existing.lastTicketCardAcquiredAt);
   }
   if (replaceMeasurementTargets) {
     normalized.measurementTargets = requestedMeasurementTargets;
@@ -1940,6 +1963,12 @@ function syncCustomerProfileTicketCard_(customer, clientId, activeTicketCard, so
   if (normalizeText_(clientId) && record.clientIds.indexOf(normalizeText_(clientId)) === -1) {
     record.clientIds.push(normalizeText_(clientId));
   }
+  if (ticketCardSource === "customer" && record.lastTicketCardAcquiredAt) {
+    var acquiredAt = new Date(record.lastTicketCardAcquiredAt);
+    if (!isNaN(acquiredAt.getTime()) && Date.now() - acquiredAt.getTime() < TICKET_CARD_ACQUIRE_COOLDOWN_MS) {
+      throw new Error("スタンプカードの取得は24時間に1回までです。24時間後にもう一度お試しください。");
+    }
+  }
   if (record.activeTicketCardSource === "admin" && ticketCardSource !== "admin") {
     record.activeTicketCard = normalizeActiveTicketCard_(record.activeTicketCard);
     record.activeTicketCardSource = "admin";
@@ -1947,11 +1976,15 @@ function syncCustomerProfileTicketCard_(customer, clientId, activeTicketCard, so
     record.activeTicketCard = ticketCard;
     record.activeTicketCardSource = ticketCardSource;
   }
+  if (ticketCardSource === "customer") {
+    record.lastTicketCardAcquiredAt = new Date().toISOString();
+  }
   record.updatedAt = new Date().toISOString();
 
   var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
     replaceActiveTicketCard: true,
     replaceActiveTicketCardSource: true,
+    replaceLastTicketCardAcquiredAt: ticketCardSource === "customer",
   });
   saveCustomerProfiles_(profiles);
   return saved;
