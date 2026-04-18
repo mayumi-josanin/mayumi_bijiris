@@ -34,6 +34,7 @@ var BACKUP_META_PROPERTY_KEY = "BACKUP_META_JSON";
 var LAST_MAINTENANCE_META_PROPERTY_KEY = "LAST_MAINTENANCE_META_JSON";
 var VERSION = "20260415-03";
 var RESPONSE_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+var RESPONSE_RESUBMIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 var TICKET_CARD_ACQUIRE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 var DUPLICATE_RESPONSE_WINDOW_MS = 10 * 60 * 1000;
 var LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -2290,6 +2291,13 @@ function saveResponse_(body) {
     var answers = buildAnswers_(survey, payload.answers || [], responseId, customerName);
     var duplicate = findDuplicateResponse_(survey, customerName, customerClientId, answers);
     if (duplicate) return { response: duplicate };
+    var recentResponse = findLatestSurveyResponseWithinCooldown_(survey.id, customerName);
+    if (recentResponse) {
+      if (makeResponseSignature_(survey.id, customerName, recentResponse.answers) === makeResponseSignature_(survey.id, customerName, answers)) {
+        return { response: recentResponse };
+      }
+      throw new Error(buildResponseResubmissionCooldownMessage_(recentResponse));
+    }
 
     var response = {
       id: responseId,
@@ -2570,6 +2578,41 @@ function findDuplicateResponse_(survey, customerName, customerClientId, answers)
     }
   }
   return null;
+}
+
+function findLatestSurveyResponseWithinCooldown_(surveyId, customerName) {
+  var normalizedSurveyId = normalizeText_(surveyId);
+  var normalizedCustomerName = normalizeText_(customerName);
+  if (!normalizedSurveyId || !normalizedCustomerName) return null;
+  var nowTime = Date.now();
+  var responses = getResponses_({ customerName: normalizedCustomerName, matchByNameOnly: true });
+  for (var i = 0; i < responses.length; i += 1) {
+    var response = responses[i];
+    if (normalizeText_(response.surveyId) !== normalizedSurveyId) continue;
+    var submittedAt = new Date(response.submittedAt);
+    if (isNaN(submittedAt.getTime())) continue;
+    if (nowTime - submittedAt.getTime() <= RESPONSE_RESUBMIT_COOLDOWN_MS) {
+      return response;
+    }
+  }
+  return null;
+}
+
+function formatDateTimeJa_(value) {
+  if (!value) return "";
+  var date = value instanceof Date ? value : new Date(value);
+  if (isNaN(date.getTime())) return "";
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm");
+}
+
+function buildResponseResubmissionCooldownMessage_(response) {
+  var submittedAt = new Date(response && response.submittedAt);
+  if (isNaN(submittedAt.getTime())) {
+    return "このアンケートは送信後24時間たたないと再送信できません。";
+  }
+  var availableAt = new Date(submittedAt.getTime() + RESPONSE_RESUBMIT_COOLDOWN_MS);
+  return "このアンケートは送信後24時間たたないと再送信できません。次は " +
+    formatDateTimeJa_(availableAt) + " 以降に送信できます。";
 }
 
 function makeResponseSignature_(surveyId, customerName, answers) {
