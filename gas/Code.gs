@@ -1515,6 +1515,11 @@ function publicMeasurementTargets_(value) {
   };
 }
 
+function normalizeActiveTicketCardSource_(value) {
+  var normalized = normalizeText_(value).toLowerCase();
+  return ["admin", "response", "customer"].indexOf(normalized) >= 0 ? normalized : "";
+}
+
 function normalizeCustomerProfileRecord_(record, fallbackName) {
   var name = normalizeText_(record && record.name || fallbackName);
   if (!name) return null;
@@ -1537,6 +1542,9 @@ function normalizeCustomerProfileRecord_(record, fallbackName) {
     aliases: aliases,
     clientIds: clientIds,
     activeTicketCard: normalizeActiveTicketCard_(record && record.activeTicketCard),
+    activeTicketCardSource: normalizeActiveTicketCardSource_(
+      record && (record.activeTicketCardSource || record.ticketCardSource)
+    ),
     measurementTargets: normalizeMeasurementTargets_(record && record.measurementTargets),
     pushStatus: normalizePushStatus_(record && record.pushStatus),
     adminManaged: record && record.adminManaged === true,
@@ -1574,6 +1582,7 @@ function publicCustomerProfile_(record) {
     memberNumber: normalizeMemberNumber_(record.memberNumber),
     nameKana: normalizeKana_(record.nameKana),
     activeTicketCard: publicActiveTicketCard_(record.activeTicketCard),
+    activeTicketCardSource: normalizeActiveTicketCardSource_(record.activeTicketCardSource),
     measurementTargets: publicMeasurementTargets_(record.measurementTargets),
     pushStatus: publicPushStatus_(record.pushStatus),
     updatedAt: normalizeText_(record.updatedAt),
@@ -1664,9 +1673,13 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
   var normalized = normalizeCustomerProfileRecord_(record, record && record.name);
   if (!normalized) return null;
   var replaceActiveTicketCard = options && options.replaceActiveTicketCard === true;
+  var replaceActiveTicketCardSource = options && options.replaceActiveTicketCardSource === true;
   var replaceMeasurementTargets = options && options.replaceMeasurementTargets === true;
   var replacePushStatus = options && options.replacePushStatus === true;
   var requestedActiveTicketCard = normalizeActiveTicketCard_(record && record.activeTicketCard);
+  var requestedActiveTicketCardSource = normalizeActiveTicketCardSource_(
+    record && (record.activeTicketCardSource || record.ticketCardSource)
+  );
   var requestedMeasurementTargets = normalizeMeasurementTargets_(record && record.measurementTargets);
   var requestedPushStatus = normalizePushStatus_(record && record.pushStatus);
   if (previousKey && previousKey !== normalized.name) {
@@ -1692,6 +1705,13 @@ function saveCustomerProfileRecord_(profiles, previousKey, record, options) {
     normalized.activeTicketCard = requestedActiveTicketCard;
   } else if (existing && existing.activeTicketCard) {
     normalized.activeTicketCard = normalizeActiveTicketCard_(existing.activeTicketCard);
+  }
+  if (replaceActiveTicketCardSource) {
+    normalized.activeTicketCardSource = requestedActiveTicketCardSource;
+  } else if (requestedActiveTicketCardSource) {
+    normalized.activeTicketCardSource = requestedActiveTicketCardSource;
+  } else if (existing && existing.activeTicketCardSource) {
+    normalized.activeTicketCardSource = normalizeActiveTicketCardSource_(existing.activeTicketCardSource);
   }
   if (replaceMeasurementTargets) {
     normalized.measurementTargets = requestedMeasurementTargets;
@@ -1819,6 +1839,7 @@ function updateAdminCustomerProfileRecord_(currentName, nextName, responses, opt
   if (!fromName || !toName) return null;
   var normalizedOptions = options && typeof options === "object" ? options : {};
   var shouldReplaceActiveTicketCard = Object.prototype.hasOwnProperty.call(normalizedOptions, "activeTicketCard");
+  var shouldReplaceActiveTicketCardSource = Object.prototype.hasOwnProperty.call(normalizedOptions, "activeTicketCardSource");
   var shouldReplaceMeasurementTargets = Object.prototype.hasOwnProperty.call(normalizedOptions, "measurementTargets");
 
   var profiles = getCustomerProfiles_();
@@ -1866,12 +1887,16 @@ function updateAdminCustomerProfileRecord_(currentName, nextName, responses, opt
   if (shouldReplaceActiveTicketCard) {
     record.activeTicketCard = normalizeActiveTicketCard_(normalizedOptions.activeTicketCard);
   }
+  if (shouldReplaceActiveTicketCardSource) {
+    record.activeTicketCardSource = normalizeActiveTicketCardSource_(normalizedOptions.activeTicketCardSource);
+  }
   if (shouldReplaceMeasurementTargets) {
     record.measurementTargets = normalizeMeasurementTargets_(normalizedOptions.measurementTargets);
   }
 
   var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
     replaceActiveTicketCard: shouldReplaceActiveTicketCard,
+    replaceActiveTicketCardSource: shouldReplaceActiveTicketCardSource,
     replaceMeasurementTargets: shouldReplaceMeasurementTargets,
   });
   saveCustomerProfiles_(profiles);
@@ -1893,11 +1918,12 @@ function getAdminCustomerProfiles_() {
     });
 }
 
-function syncCustomerProfileTicketCard_(customer, clientId, activeTicketCard) {
+function syncCustomerProfileTicketCard_(customer, clientId, activeTicketCard, source) {
   var ticketCard = normalizeActiveTicketCard_(activeTicketCard);
   if (!ticketCard) return null;
   var profile = resolveCustomerProfileForSubmission_(customer, clientId);
   if (!profile) return null;
+  var ticketCardSource = normalizeActiveTicketCardSource_(source) || "customer";
 
   var profiles = getCustomerProfiles_();
   var match = findCustomerProfileByClientId_(profiles, clientId) ||
@@ -1914,11 +1940,18 @@ function syncCustomerProfileTicketCard_(customer, clientId, activeTicketCard) {
   if (normalizeText_(clientId) && record.clientIds.indexOf(normalizeText_(clientId)) === -1) {
     record.clientIds.push(normalizeText_(clientId));
   }
-  record.activeTicketCard = ticketCard;
+  if (record.activeTicketCardSource === "admin" && ticketCardSource !== "admin") {
+    record.activeTicketCard = normalizeActiveTicketCard_(record.activeTicketCard);
+    record.activeTicketCardSource = "admin";
+  } else {
+    record.activeTicketCard = ticketCard;
+    record.activeTicketCardSource = ticketCardSource;
+  }
   record.updatedAt = new Date().toISOString();
 
   var saved = saveCustomerProfileRecord_(profiles, match && match.key, record, {
     replaceActiveTicketCard: true,
+    replaceActiveTicketCardSource: true,
   });
   saveCustomerProfiles_(profiles);
   return saved;
@@ -1954,7 +1987,7 @@ function syncCustomerProfileTicketCardFromResponse_(response) {
   return syncCustomerProfileTicketCard_({
     name: response.customerName,
     nameKana: "",
-  }, response.customerClientId, ticketCard);
+  }, response.customerClientId, ticketCard, "response");
 }
 
 function deleteCustomerProfileRecord_(customerName) {
@@ -2366,7 +2399,7 @@ function updatePublicTicketCard_(body) {
     var customer = body.customer || body.payload && body.payload.customer || {};
     var clientId = body.clientId || body.payload && body.payload.clientId || "";
     var ticketCard = body.ticketCard || body.payload && body.payload.ticketCard || {};
-    var saved = syncCustomerProfileTicketCard_(customer, clientId, ticketCard);
+    var saved = syncCustomerProfileTicketCard_(customer, clientId, ticketCard, "customer");
     if (!saved) throw new Error("スタンプカード情報を保存できませんでした。");
     appendAuditLog_("customer.ticket_card.public_update", {
       customerName: saved.name,
@@ -3940,8 +3973,7 @@ function updateCustomerProfile_(customerName, payload) {
         sheetLabel: ticketSheet,
         roundLabel: ticketRound,
       };
-    } else if (profileMatch && profileMatch.profile && profileMatch.profile.activeTicketCard) {
-      profileUpdateOptions.activeTicketCard = normalizeActiveTicketCard_(profileMatch.profile.activeTicketCard);
+      profileUpdateOptions.activeTicketCardSource = "admin";
     }
     if (shouldReplaceMeasurementTargets) {
       profileUpdateOptions.measurementTargets = measurementTargets;
