@@ -892,6 +892,7 @@ function getPreferences_() {
     recoveryMemo: normalizeText_(stored && stored.recoveryMemo) || DEFAULT_RECOVERY_MEMO_(),
     twoFactorEnabled: false,
     bijirisCategoryConfig: normalizeBijirisCategoryConfig_(stored && stored.bijirisCategoryConfig),
+    gachaPrizeConfig: normalizeGachaPrizeConfig_(stored && stored.gachaPrizeConfig),
   };
   if (JSON.stringify(stored || {}) !== JSON.stringify(preferences)) {
     properties.setProperty(PREFERENCES_PROPERTY_KEY, JSON.stringify(preferences));
@@ -917,6 +918,9 @@ function updatePreferences_(payload) {
     bijirisCategoryConfig: normalizeBijirisCategoryConfig_(
       (payload && payload.bijirisCategoryConfig) || current.bijirisCategoryConfig
     ),
+    gachaPrizeConfig: normalizeGachaPrizeConfig_(
+      payload && payload.gachaPrizeConfig || current.gachaPrizeConfig
+    ),
   };
 
   if (next.notificationEnabled && !next.notificationEmail) {
@@ -933,6 +937,65 @@ function updatePreferences_(payload) {
     twoFactorEnabled: false,
   });
   return next;
+}
+
+var GACHA_PRIZE_KEYS_ = ["A", "B", "C", "D"];
+
+function normalizeMonthKey_(value) {
+  var raw = normalizeText_(value);
+  var matched = raw.match(/^(\d{4})[-\/年](\d{1,2})/);
+  if (!matched) return "";
+  var year = Number(matched[1]);
+  var month = Number(matched[2]);
+  if (!isFinite(year) || !isFinite(month) || month < 1 || month > 12) return "";
+  return Utilities.formatString("%04d-%02d", year, month);
+}
+
+function getCurrentMonthKey_() {
+  return normalizeMonthKey_(new Date().toISOString()) || "2026-04";
+}
+
+function normalizeGachaProbability_(value, fallback) {
+  var numeric = Number(value);
+  if (!isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numeric * 10) / 10));
+}
+
+function createDefaultGachaMonthlyPrize_(month) {
+  return {
+    month: month || getCurrentMonthKey_(),
+    prizes: {
+      A: { content: "", probability: 25 },
+      B: { content: "", probability: 25 },
+      C: { content: "", probability: 25 },
+      D: { content: "", probability: 25 }
+    }
+  };
+}
+
+function normalizeGachaPrizeConfig_(value) {
+  var seenMonths = {};
+  var monthlyPrizes = [];
+  (Array.isArray(value && value.monthlyPrizes) ? value.monthlyPrizes : []).forEach(function (entry) {
+    var month = normalizeMonthKey_(entry && entry.month);
+    if (!month || seenMonths[month]) return;
+    seenMonths[month] = true;
+    var prizes = {};
+    GACHA_PRIZE_KEYS_.forEach(function (key) {
+      var prize = entry && entry.prizes && entry.prizes[key] || {};
+      prizes[key] = {
+        content: normalizeText_(prize.content),
+        probability: normalizeGachaProbability_(prize.probability, 0)
+      };
+    });
+    monthlyPrizes.push({ month: month, prizes: prizes });
+  });
+  monthlyPrizes.sort(function (a, b) {
+    return a.month < b.month ? -1 : a.month > b.month ? 1 : 0;
+  });
+  return {
+    monthlyPrizes: monthlyPrizes.length ? monthlyPrizes : [createDefaultGachaMonthlyPrize_(getCurrentMonthKey_())]
+  };
 }
 
 function updatePushConfig_(payload, options) {
