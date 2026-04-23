@@ -473,7 +473,7 @@ function handlePost_(body) {
   if (body.action === "adminUpdateCustomerMemo") {
     requireAdmin_(body.token);
     return {
-      memos: updateCustomerMemo_(body.customerName, body.memo),
+      memos: updateCustomerMemo_(body.customerName, body.memo, body.at),
     };
   }
   if (body.action === "adminUpdateCustomer") {
@@ -1437,7 +1437,7 @@ function normalizeCustomerMemoRecord_(value) {
     var latestMemo = normalizeText_(value);
     return {
       latestMemo: latestMemo,
-      entries: latestMemo ? [{ at: new Date().toISOString(), memo: latestMemo }] : [],
+      entries: latestMemo ? [{ at: "", memo: latestMemo }] : [],
     };
   }
   var latest = normalizeText_(value.latestMemo || value.memo);
@@ -1445,17 +1445,43 @@ function normalizeCustomerMemoRecord_(value) {
     ? value.entries
         .map(function (entry) {
           return {
-            at: normalizeText_(entry && entry.at) || new Date().toISOString(),
+            at: normalizeMemoDate_(entry && entry.at),
             memo: normalizeText_(entry && (entry.memo || entry.content)),
           };
         })
         .filter(function (entry) { return entry.memo; })
+        .sort(function (a, b) {
+          return memoEntrySortValue_(b.at) - memoEntrySortValue_(a.at);
+        })
     : [];
-  if (!latest && entries.length) latest = entries[0].memo;
+  if (entries.length) latest = entries[0].memo;
   return {
     latestMemo: latest,
-    entries: entries,
+    entries: entries.slice(0, 100),
   };
+}
+
+function getTodayMemoDate_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Asia/Tokyo", "yyyy-MM-dd");
+}
+
+function normalizeMemoDate_(value) {
+  var text = normalizeText_(value);
+  if (!text) return "";
+  var matched = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (matched) {
+    return matched[1] + "-" + matched[2] + "-" + matched[3];
+  }
+  var parsed = new Date(text);
+  if (isNaN(parsed.getTime())) return "";
+  return Utilities.formatDate(parsed, Session.getScriptTimeZone() || "Asia/Tokyo", "yyyy-MM-dd");
+}
+
+function memoEntrySortValue_(value) {
+  var text = normalizeMemoDate_(value);
+  if (!text) return 0;
+  var parsed = new Date(text + "T00:00:00");
+  return isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 }
 
 function getCustomerMemos_() {
@@ -1470,24 +1496,35 @@ function getCustomerMemos_() {
   return normalized;
 }
 
-function updateCustomerMemo_(customerName, memo) {
+function updateCustomerMemo_(customerName, memo, at) {
   var name = normalizeText_(customerName);
   if (!name) throw new Error("お客様名が必要です。");
   var memos = getCustomerMemos_();
   var normalizedMemo = normalizeText_(memo);
+  var normalizedAt = normalizeMemoDate_(at);
   if (normalizedMemo) {
     var current = normalizeCustomerMemoRecord_(memos[name]);
     var entries = Array.isArray(current.entries) ? current.entries.slice() : [];
-    if (normalizedMemo !== current.latestMemo) {
+    if (normalizedAt) {
+      var exists = entries.some(function (entry) {
+        return normalizeText_(entry.memo) === normalizedMemo && normalizeMemoDate_(entry.at) === normalizedAt;
+      });
+      if (!exists) {
+        entries.unshift({
+          at: normalizedAt,
+          memo: normalizedMemo,
+        });
+      }
+    } else if (normalizedMemo !== current.latestMemo) {
       entries.unshift({
-        at: new Date().toISOString(),
+        at: getTodayMemoDate_(),
         memo: normalizedMemo,
       });
     }
-    memos[name] = {
-      latestMemo: normalizedMemo,
-      entries: entries.slice(0, 100),
-    };
+    memos[name] = normalizeCustomerMemoRecord_({
+      latestMemo: current.latestMemo,
+      entries: entries,
+    });
   } else {
     delete memos[name];
   }
