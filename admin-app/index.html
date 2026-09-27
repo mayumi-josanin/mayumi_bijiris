@@ -1,38 +1,44 @@
 <!doctype html>
 <html lang="ja">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>アンケート管理アプリは移転しました｜まゆみ助産院</title>
-<meta http-equiv="refresh" content="6;url=https://mayumi-josanin.github.io/mayumi-app/bijiris/admin-app/" />
-<style>
-  body {
-    margin: 0; padding: 40px 20px; background: #fdf8f0; color: #3a332b;
-    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
-    line-height: 1.9; text-align: center;
-  }
-  .card {
-    max-width: 420px; margin: 0 auto; background: #fff; border: 1px solid #e7ded0;
-    border-radius: 16px; padding: 32px 24px;
-  }
-  h1 { font-size: 19px; margin: 0 0 14px; color: #6c8a5e; }
-  p { font-size: 14px; margin: 0 0 18px; }
-  .note { font-size: 12px; color: #8b8073; }
-  a.go {
-    display: block; margin-top: 20px; padding: 14px; font-size: 16px; font-weight: 700;
-    color: #fff; background: #8a9e7e; border-radius: 10px; text-decoration: none;
-  }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h1>アプリの場所が変わりました</h1>
-    <p>アンケート管理アプリは、まゆみ助産院アプリと同じ場所に移りました。<br />数秒後に新しい画面へ移ります。</p>
-    <a class="go" href="https://mayumi-josanin.github.io/mayumi-app/bijiris/admin-app/">新しい画面を開く</a>
-    <p class="note" style="margin-top:20px;">
-      ホーム画面に追加されている方は、お手数ですが新しい画面から追加し直してください。<br />
-      回答の記録はそのまま引き継がれます。
-    </p>
-  </div>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex" />
+    <title>ビジリス管理は新しい管理画面へ移りました</title>
+    <link rel="manifest" href="./manifest.webmanifest?v=20260927-01" />
+    <link rel="icon" href="./icons/icon-192.png?v=20260927-01" sizes="192x192" />
+    <!--
+      旧ビジリス管理アプリを閉じた（院長の依頼 2026-09-27）。
+      回答・顧客・計測は 2026-09-27、アンケート定義は 2026-09-25 にサーバーへ移った。
+      この画面から直しても、GAS が「サーバーへ移りました」と断る（シートへ書かない安全網）ので、
+      新しい管理画面へご案内する。前の中身（app.js など）は mayumi の履歴に残っている。
+      sw.js は、端末に残った前の画面を消して、この案内に切り替える作り。
+    -->
+    <style>
+      body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+        background: #f5f5f5; color: #222; display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+      main { background: #fff; max-width: 440px; margin: 16px; padding: 28px 24px; border-radius: 14px;
+        box-shadow: 0 4px 18px rgba(0,0,0,.08); line-height: 1.8; }
+      h1 { font-size: 1.2rem; color: #3f5a34; margin: 0 0 12px; }
+      a.button { display: block; text-align: center; background: #5a7a4e; color: #fff; text-decoration: none;
+        padding: 14px; border-radius: 10px; font-weight: 700; margin: 20px 0 8px; }
+      .note { font-size: .85rem; color: #666; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ビジリス管理は、新しい管理画面へ移りました</h1>
+      <p>回答・顧客・計測・アンケートの確認と編集は、新しい管理画面の「ビジリス管理」から行えます。</p>
+      <p>新しい回答が届くと、管理画面の上の 🔔 と「回答管理」のタブに件数が出ます。</p>
+      <a class="button" href="https://desktop-rmsk0vg.tail8efe0d.ts.net:10002/manage/bijiris/">新しい管理画面を開く</a>
+      <p class="note">院内のネットワーク（Tailscale）につながっている端末から開けます。<br />
+        このアプリは、ホーム画面から削除してかまいません。</p>
+    </main>
+    <script>
+      // 端末に残っている前の画面の仕組み（Service Worker）を新しくして、前の控えを消す
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./sw.js?v=20260927-01").then(function (r) { r.update(); }).catch(function () {});
+      }
+    </script>
+  </body>
 </html>
